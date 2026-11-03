@@ -405,6 +405,8 @@ kb import dist/migrate.zip --force       # 在新电脑恢复
 ```
 
 - `share` 包用于发给别人，打包前会经过隐私扫描；`data/`、`config/config.json`、`config/feishu.json` 不会进入。
+- **分享包与本地版本的关系**：程序完全一致——索引、搜索、摘录式问答、整理、Web 控制台、MCP、飞书机器人全部功能都在；不同的是**数据**（你的索引库 `data/`）、**配置**（真实 `config.json`/`feishu.json` 凭据、个人整理规则）和**索引**不会带过去，接收方拿到后需要自己跑 `kb scope` + `kb index` 建索引、按需填配置。
+- **可选依赖需自行安装**：办公文档解析 `pip install -e ".[docs]"`（PDF/Word/Excel/PPT 正文抽取）、图片整理 `pip install -e ".[vision]"`（OpenCV）、飞书接入 `pip install -e ".[feishu]"`；也可 `kb setup` 向导里勾选自动装。
 - `migrate` 包用于自己换电脑，包含索引数据库；如果新电脑路径不同，重新 `kb scope`/`kb index` 即可。
 - `kb scan` 发现可疑内容会返回非零退出码，可接到打包脚本里做门禁。
 
