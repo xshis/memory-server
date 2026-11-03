@@ -1,0 +1,23 @@
+# 环境/依赖
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 数据与日志（红线：不入库）
+data/
+logs/
+
+# 真实配置与备份（example 示例入库）
+config/config.json
+config/feishu.json
+config/*.bak-*
+
+# 构建产物与分享包
+dist/
+build/
+*.egg-info/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db

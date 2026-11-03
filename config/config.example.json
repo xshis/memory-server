@@ -1,0 +1,95 @@
+{
+  "app": {
+    "name": "知识库助手"
+  },
+  "index": {
+    "max_file_size_mb": 20,
+    "max_content_chars": 2000000,
+    "exclude_dirs": [
+      ".git",
+      ".svn",
+      ".hg",
+      "node_modules",
+      "__pycache__",
+      ".venv",
+      "venv",
+      ".idea",
+      ".vscode",
+      ".Trash",
+      "$RECYCLE.BIN",
+      "System Volume Information",
+      "Windows",
+      "Program Files",
+      "Program Files (x86)",
+      "ProgramData",
+      "Library",
+      "AppData",
+      "Containers",
+      "Caches",
+      "Group Containers"
+    ],
+    "exclude_globs": [
+      "*.tmp",
+      "*.temp",
+      "*.part",
+      "*.crdownload",
+      "*.download",
+      "~$*",
+      ".DS_Store",
+      "Thumbs.db",
+      "desktop.ini"
+    ],
+    "sensitive_globs": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "*.kdbx",
+      "id_rsa",
+      "id_ed25519",
+      "credentials*",
+      "Cookies",
+      "Login Data",
+      "Web Data"
+    ],
+    "text_exts": [
+      ".md", ".markdown", ".txt", ".text", ".log",
+      ".json", ".jsonl", ".csv", ".tsv", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+      ".html", ".htm", ".css", ".scss", ".less",
+      ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+      ".java", ".kt", ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift",
+      ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".r", ".lua", ".pl"
+    ]
+  },
+  "search": {
+    "default_limit": 20
+  },
+  "mcp": {
+    "host": "127.0.0.1",
+    "port": 8766
+  },
+  "watch": {
+    "interval_seconds": 30
+  },
+  "models": {
+    "mode": "none",
+    "local": {
+      "chat": "qwen2.5:3b",
+      "embed": "nomic-embed-text",
+      "num_gpu": 0,
+      "num_thread": 8,
+      "num_ctx": 3072,
+      "num_predict": 320,
+      "keep_alive": "24h",
+      "context_chars": 2500,
+      "max_sources": 3,
+      "cache_seconds": 600,
+      "answer_without_context": false
+    },
+    "cloud": {
+      "enabled": false
+    }
+  }
+}
