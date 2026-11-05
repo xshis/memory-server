@@ -361,6 +361,40 @@ aside.chat.docked { border-left: 0; box-shadow: 16px 0 50px rgba(2,6,16,.45); }
 .focus-back { backdrop-filter: blur(8px); box-shadow: 0 6px 18px rgba(2,6,16,.4); }
 .loading-box { background: rgba(10,17,30,.72); border: 1px solid rgba(147,197,253,.2);
   border-radius: 16px; padding: 22px 20px; backdrop-filter: blur(10px); box-shadow: 0 20px 50px rgba(2,6,16,.5); }
+
+/* 脑图内搜索定位（P0） */
+#mapSearch { position: absolute; right: 14px; top: 12px; z-index: 5; width: 240px; }
+#mapSearchInput { width: 100%; border: 1px solid rgba(120,160,220,.28); border-radius: 999px;
+  background: rgba(8,15,28,.72); backdrop-filter: blur(8px); color: var(--ink);
+  padding: 6px 13px; font: inherit; font-size: 12px; outline: none;
+  transition: border-color .18s ease, box-shadow .18s ease; }
+#mapSearchInput:focus { border-color: rgba(147,197,253,.85);
+  box-shadow: 0 0 0 3px rgba(96,165,250,.15), 0 0 16px rgba(96,165,250,.2); }
+#mapSearchInput::placeholder { color: #7e94b5; }
+#mapSearchDrop { position: absolute; top: calc(100% + 6px); right: 0; width: 320px; max-height: 300px;
+  overflow: auto; background: rgba(10,17,30,.95); backdrop-filter: blur(16px);
+  border: 1px solid rgba(147,197,253,.25); border-radius: 13px;
+  box-shadow: 0 18px 46px rgba(2,6,16,.6); padding: 5px; }
+.ms-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 9px;
+  cursor: pointer; font-size: 12px; color: #d8e6f8; }
+.ms-item:hover, .ms-item.active { background: rgba(96,165,250,.16); }
+.ms-item .ms-kind { flex: none; font-size: 10px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid rgba(147,197,253,.35); color: #9ec5ff; }
+.ms-item .ms-path { margin-left: auto; color: #7e94b5; font-size: 10.5px; max-width: 45%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-empty { padding: 9px 10px; font-size: 11.5px; color: #8198b8; }
+
+/* 分类图例（P0） */
+#legend { position: absolute; right: 14px; bottom: 12px; z-index: 4; display: flex;
+  flex-direction: column; gap: 3px; max-height: 46vh; overflow: auto; padding: 8px;
+  background: rgba(8,15,28,.62); backdrop-filter: blur(10px);
+  border: 1px solid rgba(120,160,220,.2); border-radius: 13px; }
+.legend-item { display: flex; align-items: center; gap: 7px; padding: 3.5px 8px; border-radius: 8px;
+  cursor: pointer; font-size: 11.5px; color: #c8d8ec; transition: background .12s ease; }
+.legend-item:hover { background: rgba(96,165,250,.14); color: #fff; }
+.legend-item i { width: 9px; height: 9px; border-radius: 50%; flex: none;
+  box-shadow: 0 0 7px currentColor; }
+.legend-item em { margin-left: auto; font-style: normal; color: #7e94b5; font-size: 10.5px; }
 </style>
 </head>
 <body>
@@ -413,11 +447,15 @@ aside.chat.docked { border-left: 0; box-shadow: 16px 0 50px rgba(2,6,16,.45); }
       </div>
     </div>
     <div id="selfcheckBadge" title="系统自检">自检 读取中…</div>
-    
+    <div id="mapSearch">
+      <input id="mapSearchInput" type="search" placeholder="搜索文件 / 标签，回车定位…" autocomplete="off">
+      <div id="mapSearchDrop" hidden></div>
+    </div>
     <button id="focusBack" class="focus-back" hidden>← 返回全景</button>
     <div id="tooltip"></div>
     <div id="hud"></div>
     <div id="toast"></div>
+    <div id="legend" title="点击图例聚焦分类，悬停高亮"></div>
   </section>
 </main>
 
@@ -496,6 +534,8 @@ const cleanWin = document.getElementById('cleanWin');
 const cleanBody = document.getElementById('cleanBody');
 
 let graph = null;
+// 图例悬停高亮（P0/P1）：悬停的分类 id，绘制时非同类节点压暗
+let legendDimCluster = null;
 let nodeById = new Map();
 let allNodes = [];
 let allLinks = [];
@@ -662,7 +702,16 @@ function displayPos(node) {
   const dz = node.z - center.z;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
-  return {x: center.x + dx * cos - dz * sin, y: node.y, z: center.z + dx * sin + dz * cos};
+  let rx = center.x + dx * cos - dz * sin;
+  let rz = center.z + dx * sin + dz * cos;
+  // 聚焦聚拢（融合球体布局）：聚焦某分类时，该类文件节点向中心收拢——
+  // 否则文件散布全球，飞到分类位置也看不到它的文件
+  if (focusedCluster && clusterId === focusedCluster && focusAmount > 0.001 && node.kind === 'file') {
+    const pull = 0.72 * focusAmount;
+    rx = center.x + (rx - center.x) * (1 - pull);
+    rz = center.z + (rz - center.z) * (1 - pull);
+  }
+  return {x: rx, y: node.y, z: rz};
 }
 
 function rebuildVisible() {
@@ -900,6 +949,12 @@ function draw(dt) {
 
   const focus = selected || hovered;
   const neighbors = neighborIds(focus);
+  // 悬停聚焦变暗（P1）：悬停节点/图例分类时，非同类节点压暗突出主体
+  const dimCluster = legendDimCluster || (focus ? clusterOf(focus) : null);
+  const dimFactorOf = node => (!dimCluster || node.kind === 'root') ? 1
+    : (clusterOf(node) === dimCluster ? 1 : 0.28);
+  // 标签分级预算（P1）：全景只显示大文件标签，放大/聚焦后逐步全量，避免文字糊团
+  const labelBudget = zoom > 1200 ? 42 : (zoom > 800 ? 140 : Infinity);
   for (const link of visibleLinks) {
     const a = projected.get(link.source);
     const b = projected.get(link.target);
@@ -950,7 +1005,7 @@ function draw(dt) {
     const vis = visibilityFor(node);
     if (vis <= 0.02) continue;
     const fog = fogFor(p);
-    const alpha = vis * fog;
+    const alpha = vis * fog * dimFactorOf(node);
     const minRadius = node.kind === 'file' ? 3.6 : 1.2;
     const radius = Math.max(minRadius, (node.radius || 5) * p.scale);
     const isDragged = nodeDrag && nodeDrag.node.id === node.id;
@@ -1047,7 +1102,7 @@ function draw(dt) {
     .map(item => ({
       node: item.node,
       p: item.p,
-      alpha: visibilityFor(item.node) * fogFor(item.p),
+      alpha: visibilityFor(item.node) * fogFor(item.p) * dimFactorOf(item.node),
     }))
     .filter(item => item.alpha > 0.12)
     .sort((a, b) => {
@@ -1057,7 +1112,8 @@ function draw(dt) {
         return 0;
       };
       return priority(b) - priority(a) || b.p.depth - a.p.depth;
-    });
+    })
+    .slice(0, labelBudget);
   for (const item of fileLabels) {
     const {node, p} = item;
     const forced = (selected && node.id === selected.id) || (hovered && node.id === hovered.id);
@@ -2550,9 +2606,91 @@ loadGraph().then(ok => {
   }
   allNodes = (graph ? graph.nodes : []).concat(extraNodes);
   allLinks = (graph ? graph.links : []).concat(extraLinks);
+  renderLegend();
   pollStatus(false);
   stopLoadingProgress();
 });
+
+/* ---- 分类图例（P0）：点击聚焦分类，悬停压暗其他分类 ---- */
+function renderLegend() {
+  const legendEl = document.getElementById('legend');
+  if (!legendEl) return;
+  const cats = (graph ? graph.nodes : []).filter(n => n.tagKind === 'category');
+  legendEl.innerHTML = cats.map(n =>
+    `<div class="legend-item" data-id="${n.id}">` +
+    `<i style="background:${n.color};color:${n.color}"></i>` +
+    `<span>${escapeHtml(n.label)}</span><em>${fmt(n.count || 0)}</em></div>`
+  ).join('');
+  for (const item of legendEl.querySelectorAll('.legend-item')) {
+    item.addEventListener('mouseenter', () => {
+      legendDimCluster = item.dataset.id;
+      needsDraw = true;
+    });
+    item.addEventListener('mouseleave', () => {
+      legendDimCluster = null;
+      needsDraw = true;
+    });
+    item.addEventListener('click', () => {
+      legendDimCluster = null;
+      enterCluster(item.dataset.id);
+    });
+  }
+}
+
+/* ---- 脑图内搜索定位（P0）：匹配节点并飞行定位 ---- */
+(function initMapSearch() {
+  const input = document.getElementById('mapSearchInput');
+  const drop = document.getElementById('mapSearchDrop');
+  if (!input || !drop) return;
+  let matches = [];
+  const KIND_LABEL = { file: '文件', category: '分类', ext: '类型', dir: '目录', project: '项目', recommend: '推荐', other: '其他' };
+  const doSearch = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) { drop.hidden = true; matches = []; return; }
+    matches = [];
+    for (const node of (graph ? graph.nodes : [])) {
+      if (matches.length >= 8) break;
+      const label = String(node.label || '').toLowerCase();
+      const path = String(node.path || '').toLowerCase();
+      if (label.includes(q) || path.includes(q)) matches.push(node);
+    }
+    if (!matches.length) {
+      drop.innerHTML = '<div class="ms-empty">没有匹配的节点</div>';
+    } else {
+      drop.innerHTML = matches.map((n, i) => {
+        const kind = n.tagKind || n.kind || '';
+        const kindText = KIND_LABEL[kind] || kind;
+        const pathText = n.path ? String(n.path).split('/').slice(-2).join('/') : (n.count != null ? fmt(n.count) + ' 项' : '');
+        return `<div class="ms-item${i === 0 ? ' active' : ''}" data-i="${i}">` +
+          `<span class="ms-kind">${escapeHtml(kindText)}</span>` +
+          `<span>${escapeHtml(n.label)}</span>` +
+          `<span class="ms-path">${escapeHtml(pathText)}</span></div>`;
+      }).join('');
+      for (const el of drop.querySelectorAll('.ms-item')) {
+        el.addEventListener('mousedown', ev => { ev.preventDefault(); locate(matches[Number(el.dataset.i)]); });
+      }
+    }
+    drop.hidden = false;
+  };
+  const locate = node => {
+    if (!node) return;
+    input.blur();
+    drop.hidden = true;
+    const clusterId = node.tagKind === 'category' ? node.id : (node.primary || node.parent);
+    if (clusterId && clusterCenters.has(clusterId)) {
+      selected = nodeById.get(node.id) || node;
+      enterCluster(clusterId);
+      needsDraw = true;
+    }
+  };
+  input.addEventListener('input', doSearch);
+  input.addEventListener('focus', doSearch);
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { ev.preventDefault(); locate(matches[0]); }
+    if (ev.key === 'Escape') { input.value = ''; drop.hidden = true; input.blur(); }
+  });
+  input.addEventListener('blur', () => setTimeout(() => { drop.hidden = true; }, 150));
+})();
 requestAnimationFrame(frame);
 </script>
 </body>
