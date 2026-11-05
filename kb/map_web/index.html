@@ -998,8 +998,8 @@ function draw(dt) {
   const dimCluster = legendDimCluster || (focus ? clusterOf(focus) : null);
   const dimFactorOf = node => (!dimCluster || node.kind === 'root') ? 1
     : (clusterOf(node) === dimCluster ? 1 : 0.28);
-  // 标签分级预算（P1）：全景只显示大文件标签，放大/聚焦后逐步全量，避免文字糊团
-  const labelBudget = zoom > 1200 ? 42 : (zoom > 800 ? 140 : Infinity);
+  // 标签分级预算（P1）：全景靠碰撞检测自然取舍，放大/聚焦后全量显示（文件名是主要识别信息，不再设上限）
+  const labelBudget = Infinity;
   for (const link of visibleLinks) {
     const a = projected.get(link.source);
     const b = projected.get(link.target);
@@ -1059,7 +1059,6 @@ function draw(dt) {
     const showTagLabel = node.kind === 'tag' && (
       ['category', 'project', 'recommend'].includes(node.tagKind) || isFocus || isNeighbor
     );
-    let glyphColor = '#f2f7ff';
     if (node.kind === 'search') {
       ctx.beginPath();
       ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
@@ -1071,7 +1070,6 @@ function draw(dt) {
       const s = radius / BEAD_CORE * BEAD_SPRITE;
       ctx.globalAlpha = alpha;
       ctx.drawImage(sprite, p.x - s / 2, p.y - s / 2, s, s);
-      glyphColor = '#0d1830';
     }
     if (isFocus) {
       ctx.beginPath();
@@ -1087,36 +1085,6 @@ function draw(dt) {
       ctx.lineWidth = 1;
       ctx.globalAlpha = alpha * .8;
       ctx.stroke();
-    }
-    if ((node.kind === 'file' || node.kind === 'tag') && node.glyph) {
-      const isSelected = selected && node.id === selected.id;
-      let candidates = [node.glyph];
-      if (node.kind === 'tag') {
-        candidates = (!showTagLabel && node.word) ? [node.word, node.glyph] : [node.glyph];
-      } else if (isSelected && node.word) {
-        candidates = [node.word];
-        if (node.word.length > 2) candidates.push(node.word.slice(0, 2));
-        candidates.push(node.glyph);
-      }
-      for (const text of candidates) {
-        const maxByWidth = (radius * 1.5) / (Math.max(1, text.length) * 0.62);
-        let fontSize;
-        if (text.length > 1) {
-          fontSize = Math.min(12, radius * 1.8, maxByWidth);
-          if (fontSize < 6) continue;
-        } else {
-          fontSize = Math.max(6, Math.min(12, radius * 1.8, maxByWidth));
-          if (fontSize > radius * 1.9) continue;
-        }
-        ctx.globalAlpha = alpha * (isSelected ? 1 : (isNeighbor ? .98 : .95));
-        ctx.font = `600 ${fontSize.toFixed(1)}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
-        ctx.fillStyle = glyphColor;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, p.x, p.y + 0.5);
-        ctx.textAlign = 'left';
-        break;
-      }
     }
     if (node.kind === 'root' || showTagLabel || isFocus) {
       ctx.globalAlpha = alpha * .92;
@@ -1142,7 +1110,9 @@ function draw(dt) {
     occupied.push({x: p.x + radius + 5, y: p.y - 8, w: textWidth, h: 16});
   }
   const fileLabels = entries
-    .filter(item => item.node.kind === 'file')
+    .filter(item => item.node.kind === 'file'
+      || (item.node.kind === 'tag' && !['category', 'project', 'recommend'].includes(item.node.tagKind)
+        && !(focus && item.node.id === focus.id)))
     .map(item => ({
       node: item.node,
       p: item.p,
@@ -1163,12 +1133,13 @@ function draw(dt) {
     const forced = (selected && node.id === selected.id) || (hovered && node.id === hovered.id);
     const radius = Math.max(4.2, (node.radius || 4) * p.scale);
     let text = String(node.label || '');
-    if (text.length > 9) text = text.slice(0, 8) + '…';
+    if (text.length > 12) text = text.slice(0, 11) + '…';
     const size = forced ? 12 : 10;
     ctx.font = `600 ${size}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
     const textWidth = ctx.measureText(text).width;
     const gap = 5;
     const candidates = [
+      {x: p.x - textWidth / 2, y: p.y + radius + 11},
       {x: p.x + radius + gap, y: p.y},
       {x: p.x - radius - gap - textWidth, y: p.y},
       {x: p.x + radius + gap, y: p.y - 11},
@@ -1176,7 +1147,6 @@ function draw(dt) {
       {x: p.x + radius + gap, y: p.y + 11},
       {x: p.x - radius - gap - textWidth, y: p.y + 11},
       {x: p.x - textWidth / 2, y: p.y - radius - 12},
-      {x: p.x - textWidth / 2, y: p.y + radius + 12},
     ];
     let chosen = null;
     for (const candidate of candidates) {
@@ -1189,19 +1159,19 @@ function draw(dt) {
         const overlapY = Math.min(rect.y + rect.h, box.y + box.h) - Math.max(rect.y, box.y);
         if (overlapX > 0 && overlapY > 0) overlap += overlapX * overlapY;
       }
-      if (!forced && overlap > rect.w * rect.h * 0.22) continue;
+      if (!forced && overlap > rect.w * rect.h * 0.12) continue;
       chosen = {x, y, rect};
       break;
     }
     if (!chosen) continue;
     occupied.push(chosen.rect);
-    ctx.globalAlpha = item.alpha * (forced ? 1 : .95);
+    ctx.globalAlpha = item.alpha * (forced ? 1 : .85);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(3, 8, 18, .92)';
     ctx.strokeText(text, chosen.x, chosen.y);
-    ctx.fillStyle = forced ? '#ffffff' : '#e8f1fd';
+    ctx.fillStyle = forced ? '#ffffff' : '#d7e5f7';
     ctx.fillText(text, chosen.x, chosen.y);
   }
   ctx.globalAlpha = 1;
