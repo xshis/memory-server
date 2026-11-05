@@ -8,6 +8,58 @@ import numpy as np
 from . import llm
 from .db import upsert_file_embedding
 
+try:
+    from fastembed import TextEmbedding
+
+    _FASTEMBED_AVAILABLE = True
+except ImportError:
+    TextEmbedding = None  # type: ignore[assignment,misc]
+    _FASTEMBED_AVAILABLE = False
+
+EMBED_TEXT_CHARS = 1200
+BATCH_SIZE = 48
+DEFAULT_FASTEMBED_MODEL = "BAAI/bge-small-zh-v1.5"
+
+_TEXT_EMBEDDING = None
+
+
+def fastembed_available() -> bool:
+    return _FASTEMBED_AVAILABLE
+
+
+def _fastembed_model():
+    global _TEXT_EMBEDDING
+    if not _FASTEMBED_AVAILABLE:
+        return None
+    if _TEXT_EMBEDDING is None:
+        from .config import load_config
+
+        configured = str(
+            load_config().get("models", {}).get("local", {}).get("embed", "")
+        ).strip()
+        candidates = [configured, DEFAULT_FASTEMBED_MODEL] if configured else [DEFAULT_FASTEMBED_MODEL]
+        for candidate in candidates:
+            if not candidate or "/" not in candidate:
+                continue  # ollama 风格的名字（如 nomic-embed-text）不是 fastembed 模型
+            try:
+                _TEXT_EMBEDDING = TextEmbedding(model_name=candidate)
+                return _TEXT_EMBEDDING
+            except Exception:  # noqa: BLE001
+                continue
+        raise RuntimeError("fastembed 模型加载失败（可配置 models.local.embed 为可用模型）")
+    return _TEXT_EMBEDDING
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """嵌入文本：优先 fastembed（ONNX 本地、不依赖 Ollama），缺装时回退 Ollama。"""
+    texts = [str(text) for text in texts]
+    if not texts:
+        return []
+    model = _fastembed_model()
+    if model is not None:
+        return [[float(value) for value in vector] for vector in model.embed(texts)]
+    return llm.embed(texts, llm.embed_model())
+
 EMBED_TEXT_CHARS = 1200
 BATCH_SIZE = 48
 
@@ -48,12 +100,19 @@ def embed_missing(
 ) -> dict[str, Any]:
     """给还没有向量的文件补嵌入。可反复执行（天然断点续跑）。"""
     progress = progress or _default_progress
-    model = llm.embed_model()
-    status = llm.status()
-    if not status.get("running"):
-        raise RuntimeError("Ollama 未运行，先 `ollama serve` 或运行 `kb model`")
-    if not llm.model_available(model, status):
-        raise RuntimeError(f"嵌入模型 {model} 未安装，先运行：ollama pull {model}")
+    if _FASTEMBED_AVAILABLE:
+        try:
+            _fastembed_model()
+        except RuntimeError as exc:
+            raise RuntimeError(f"嵌入模型加载失败：{exc}") from exc
+        model = DEFAULT_FASTEMBED_MODEL
+    else:
+        model = llm.embed_model()
+        status = llm.status()
+        if not status.get("running"):
+            raise RuntimeError("嵌入不可用：安装 fastembed（pip install fastembed）或启动 Ollama")
+        if not llm.model_available(model, status):
+            raise RuntimeError(f"嵌入模型 {model} 未安装，先运行：ollama pull {model}")
 
     rows = conn.execute(
         """
@@ -79,7 +138,7 @@ def embed_missing(
         batch = rows[offset : offset + batch_size]
         texts = [embed_text_for_file(row["name"], row["content"]) for row in batch]
         try:
-            vectors = llm.embed(texts, model)
+            vectors = embed_texts(texts)
         except Exception as exc:  # noqa: BLE001
             failed += len(batch)
             progress(f"[失败] 第 {offset + 1}-{offset + len(batch)} 个：{exc}")

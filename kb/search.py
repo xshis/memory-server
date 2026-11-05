@@ -258,7 +258,9 @@ def _question_vector(question: str) -> Any | None:
     if cached and now - cached[0] < 300:
         return np.asarray(cached[1], dtype=np.float32)
     try:
-        vector = llm.embed([question], llm.embed_model())[0]
+        from . import embedder
+
+        vector = embedder.embed_texts([question])[0]
     except Exception:  # noqa: BLE001
         return None
     if len(_QUERY_VEC_CACHE) > 200:

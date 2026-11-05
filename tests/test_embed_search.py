@@ -73,11 +73,14 @@ class EmbedMissingTest(unittest.TestCase):
         from contextlib import ExitStack
 
         stack = ExitStack()
+        # 强制走 Ollama 分支并假装模型在线（真实环境优先 fastembed）
+        stack.enter_context(mock.patch.object(embedder, "_FASTEMBED_AVAILABLE", False))
         stack.enter_context(mock.patch.object(
             embedder.llm, "status",
             return_value={"running": True, "models": ["nomic-embed-text"]},
         ))
         stack.enter_context(mock.patch.object(embedder.llm, "model_available", return_value=True))
+        stack.enter_context(mock.patch.object(embedder, "embed_texts", return_value=vectors))
         stack.enter_context(mock.patch.object(embedder.llm, "embed", return_value=vectors))
         return stack
 
@@ -135,13 +138,13 @@ class HybridSearchTest(unittest.TestCase):
         return out
 
     def test_vector_search_ranks_by_cosine(self) -> None:
-        with mock.patch.object(search.llm, "embed", side_effect=self._embed_impl):
+        with mock.patch.object(embedder, "embed_texts", side_effect=self._embed_impl):
             hits = search.vector_search(self.conn, "我的猫怎么养", top=5)
         self.assertEqual(hits[0][0], self.f_cat)
         self.assertGreater(hits[0][1], 0.99)
 
     def test_semantic_recall_when_fts_misses(self) -> None:
-        with mock.patch.object(search.llm, "embed", side_effect=self._embed_impl):
+        with mock.patch.object(embedder, "embed_texts", side_effect=self._embed_impl):
             results = search.search(self.conn, "猫", limit=5)
         names = [r["name"] for r in results]
         self.assertIn("memo.txt", names)
