@@ -406,38 +406,44 @@ def build_graph(db_path: Path, *, max_files: int = 500,
     tag_parent: Dict[str, str] = {}
     ordered_tags = sorted(tags, key=lambda item: (item["tagKind"], item["label"]))
     category_tags = [tag for tag in ordered_tags if tag["tagKind"] == "category"]
-    ring_radius = 640.0
-    for index, tag in enumerate(category_tags):
-        angle = math.tau * index / max(1, len(category_tags)) + 0.35
-        x = math.cos(angle) * ring_radius
-        z = math.sin(angle) * ring_radius
-        y = math.sin(index * 1.9) * 170
+    # 整体融合球体（2026-11-05 村长要求）：所有节点（分类/子标签/文件）不再围绕父节点
+    # 聚团成"板块"，而是用全局黄金角序列均匀散布在整个球体体积内；
+    # 不画板块间连线，parent 字段保留供前端聚焦/颜色区分，root 仍在球心
+    sphere_radius = 640.0
+    fusion_index = [0]
+
+    def fusion_pos() -> Tuple[float, float, float]:
+        i = fusion_index[0]
+        fusion_index[0] += 1
+        theta = golden * i
+        phi = math.acos(1 - 2 * ((i * 0.61803398875) % 1.0))
+        radius = sphere_radius * (0.2 + 0.8 * ((i * 0.75487766625) % 1.0))
+        return (
+            math.sin(phi) * math.cos(theta) * radius,
+            math.cos(phi) * radius,
+            math.sin(phi) * math.sin(theta) * radius,
+        )
+
+    for tag in category_tags:
+        x, y, z = fusion_pos()
         tag["x"], tag["y"], tag["z"] = x, y, z
         tag["radius"] = 7 + min(12, math.log10(tag["count"] + 1) * 3.4)
         tag_positions[tag["id"]] = (x, y, z)
         tag_parent[tag["id"]] = "root"
         tag["parent"] = "root"
         nodes.append(tag)
-        links.append({"source": "root", "target": tag["id"], "kind": "hub", "color": tag["color"]})
 
     def dominant(counts: Counter, fallback: str = "其他") -> str:
         return counts.most_common(1)[0][0] if counts else fallback
 
     def place_satellite(tag: Dict[str, Any], parent: str, distance: float) -> None:
-        base = tag_positions.get(parent, (0.0, 0.0, 0.0))
-        index = len(tag_positions)
-        theta = golden * index
-        phi = math.acos(1 - 2 * ((index * 0.61803398875) % 1.0))
-        x = base[0] + math.sin(phi) * math.cos(theta) * distance
-        y = base[1] + math.cos(phi) * distance * 0.72
-        z = base[2] + math.sin(phi) * math.sin(theta) * distance
+        x, y, z = fusion_pos()
         tag["x"], tag["y"], tag["z"] = x, y, z
         tag["radius"] = 7 + min(12, math.log10(tag["count"] + 1) * 3.4)
         tag_positions[tag["id"]] = (x, y, z)
         tag_parent[tag["id"]] = parent
         tag["parent"] = parent
         nodes.append(tag)
-        links.append({"source": parent, "target": tag["id"], "kind": "sub", "color": tag["color"]})
 
     for tag in ordered_tags:
         kind = tag["tagKind"]
@@ -460,19 +466,9 @@ def build_graph(db_path: Path, *, max_files: int = 500,
             parent = "root"
         place_satellite(tag, parent, distance)
 
-    emit(70, "布置星云")
+    emit(70, "融合球体")
     def file_position(primary: str, path: str) -> Tuple[float, float, float]:
-        base = tag_positions.get(primary, (0.0, 0.0, 0.0))
-        digest = hashlib.sha1(path.encode("utf-8", "ignore")).digest()
-        rng = digest[0] / 255.0
-        theta = int.from_bytes(digest[1:5], "big") / 2 ** 32 * math.tau
-        phi = math.acos(2 * digest[5] / 255.0 - 1)
-        distance = 40 + rng * 120
-        return (
-            base[0] + math.sin(phi) * math.cos(theta) * distance,
-            base[1] + math.cos(phi) * distance * 0.65,
-            base[2] + math.sin(phi) * math.sin(theta) * distance,
-        )
+        return fusion_pos()
 
     for index, row in enumerate(selected):
         file_tags = tags_for(row)
@@ -498,15 +494,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
             "x": x, "y": y, "z": z,
             "radius": 2.4 + min(3.6, math.log10(size + 1) * 0.45),
         })
-        links.append({"source": node_id, "target": primary, "kind": "file",
-                      "color": CATEGORY_COLORS.get(row["category"], "#94a3b8")})
-        secondary = 0
-        for tag_id in file_tags:
-            if tag_id == primary or tag_parent.get(tag_id) != primary or secondary >= 2:
-                continue
-            links.append({"source": node_id, "target": tag_id, "kind": "file",
-                          "color": CATEGORY_COLORS.get(row["category"], "#94a3b8")})
-            secondary += 1
+        # 融合球体（2026-11-05）：不画任何节点间连线，文件与标签的关联只保留在字段里
 
     emit(88, "生成星点")
     summary = {

@@ -1010,8 +1010,10 @@ function frame(now) {
     if (Math.abs(inertiaX) < 0.00002) inertiaX = 0;
   }
   if (autoRotate && clusterAngles.size) {
+    // 融合球体（2026-11-05）：cluster 自转冻结——节点只随全局 rotY/rotX 整体转动，
+    // 避免各板块绕 distant 中心错位蠕动破坏"一个整体球体"的观感
     for (const [id, angle] of clusterAngles) {
-      clusterAngles.set(id, angle + dt * (clusterSpeeds.get(id) || 0.00002));
+      clusterAngles.set(id, angle);
     }
   }
   if (nodeOffsets.size) {
