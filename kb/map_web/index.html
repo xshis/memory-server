@@ -1143,6 +1143,11 @@ function frame(now) {
       }
     }
   }
+  if (autoRotate && !dragging && !nodeDrag) {
+    // 整体球体自转（2026-11-05）：cluster 自转冻结后 autoRotate 只驱动俯仰摆动，
+    // 静止画面显得乱——补回绕 Y 轴的全局持续旋转
+    rotY += dt * 0.00008;
+  }
   if (autoRotate && !dragging && !nodeDrag && !inertiaX && !inertiaY
       && performance.now() - lastCameraInput > 12000) {
     const targetPitch = -0.28 + Math.sin(elapsed * 0.00007) * 0.42;
