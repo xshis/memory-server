@@ -1139,7 +1139,14 @@ function draw(dt) {
     const forced = (selected && node.id === selected.id) || (hovered && node.id === hovered.id);
     const radius = Math.max(4.2, (node.radius || 4) * p.scale);
     let text = String(node.label || '');
-    if (text.length > 12) text = text.slice(0, 11) + '…';
+    if (!forced && zoom < 2600) {
+      // 全景缩略：去扩展名 + 压到 8 字，密度大时不乱
+      const stem = text.replace(/\.[^.]+$/, '');
+      text = stem || text;
+      if (text.length > 8) text = text.slice(0, 7) + '…';
+    } else if (text.length > 18) {
+      text = text.slice(0, 17) + '…';
+    }
     const size = forced ? 12 : 10;
     ctx.font = `600 ${size}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
     const textWidth = ctx.measureText(text).width;
