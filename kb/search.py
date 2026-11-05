@@ -20,6 +20,11 @@ from .db import (
     search_rows,
 )
 
+try:
+    import numpy as np
+except ImportError:  # 无 numpy 时自动退化为纯 FTS5 检索
+    np = None  # type: ignore[assignment]
+
 
 STOPWORDS = (
     "请问", "帮我", "帮忙", "一下", "是什么", "怎么样", "怎么", "如何",
@@ -204,6 +209,142 @@ def _row_to_result(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+# ---- 语义向量检索（文件级 int8 向量缓存 + RRF 混合融合） ----
+_VECTOR_CACHE: dict[str, Any] = {
+    "db": "", "count": -1, "max_id": -1, "ids": None, "mat": None,
+}
+_QUERY_VEC_CACHE: dict[str, tuple[float, list[float]]] = {}
+
+
+def _vector_index(conn: sqlite3.Connection) -> tuple[Any, Any] | None:
+    """加载全部文件向量到内存（int8，全库约几十 MB），按 (数量, 最大id) 自动失效。"""
+    if np is None:
+        return None
+    try:
+        from .db import _database_key
+
+        key = _database_key(conn) or str(id(conn))
+    except Exception:  # noqa: BLE001
+        key = str(id(conn))
+    row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(MAX(file_id), 0) AS m FROM file_embeddings"
+    ).fetchone()
+    count, max_id = int(row["c"] or 0), int(row["m"] or 0)
+    if count == 0:
+        return None
+    cache = _VECTOR_CACHE
+    if cache["db"] == key and cache["count"] == count and cache["max_id"] == max_id:
+        return cache["ids"], cache["mat"]
+    ids: list[int] = []
+    blobs: list[Any] = []
+    for item in conn.execute("SELECT file_id, data FROM file_embeddings ORDER BY file_id"):
+        ids.append(int(item["file_id"]))
+        blobs.append(np.frombuffer(bytes(item["data"]), dtype=np.int8))
+    if not ids:
+        return None
+    mat = np.stack(blobs)
+    cache.update({
+        "db": key, "count": count, "max_id": max_id,
+        "ids": np.asarray(ids, dtype=np.int64), "mat": mat,
+    })
+    return cache["ids"], cache["mat"]
+
+
+def _question_vector(question: str) -> Any | None:
+    if np is None:
+        return None
+    now = time.time()
+    cached = _QUERY_VEC_CACHE.get(question)
+    if cached and now - cached[0] < 300:
+        return np.asarray(cached[1], dtype=np.float32)
+    try:
+        vector = llm.embed([question], llm.embed_model())[0]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(_QUERY_VEC_CACHE) > 200:
+        _QUERY_VEC_CACHE.clear()
+    _QUERY_VEC_CACHE[question] = (now, vector)
+    return np.asarray(vector, dtype=np.float32)
+
+
+def vector_search(
+    conn: sqlite3.Connection,
+    question: str,
+    *,
+    top: int = 50,
+) -> list[tuple[int, float]]:
+    """语义向量召回，返回 [(file_id, cosine)]，按相似度降序。任何不可用自动返回空。"""
+    cached_index = _vector_index(conn)
+    if cached_index is None:
+        return []
+    ids, mat = cached_index
+    q = _question_vector(question)
+    if q is None or q.size == 0:
+        return []
+    norm = float(np.linalg.norm(q))
+    if norm <= 0:
+        return []
+    q8 = np.clip(np.round(q / norm * 127.0), -127, 127).astype(np.float32)
+    scores = (mat.astype(np.float32) @ q8) / (127.0 * 127.0)
+    k = min(int(top), int(scores.shape[0]))
+    if k <= 0:
+        return []
+    idx = np.argpartition(-scores, k - 1)[:k]
+    idx = idx[np.argsort(-scores[idx], kind="stable")]
+    return [(int(ids[i]), float(scores[i])) for i in idx]
+
+
+def _hybrid_merge(
+    conn: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    vec_hits: list[tuple[int, float]],
+    *,
+    limit: int,
+    ext: str,
+    root_id: int | None,
+) -> list[sqlite3.Row]:
+    """RRF 融合：FTS 行序与向量余弦序互为补充，只在一侧命中的文件仍保留。"""
+    if not vec_hits:
+        return rows[:limit]
+    fts_rank = {int(r["id"]): rank for rank, r in enumerate(rows)}
+    vec_rank = {fid: rank for rank, (fid, _score) in enumerate(vec_hits)}
+    needed = [fid for fid, _s in vec_hits if fid not in fts_rank]
+    extra_rows: list[sqlite3.Row] = []
+    if needed:
+        marks = ",".join("?" for _ in needed)
+        sql = (
+            f"SELECT f.*, 0.0 AS rank, substr(f.content, 1, 240) AS snippet "
+            f"FROM files f WHERE f.id IN ({marks})"
+        )
+        params: list[Any] = list(needed)
+        if ext:
+            sql += " AND f.ext = ?"
+            params.append(ext.lower())
+        if root_id is not None:
+            sql += " AND f.root_id = ?"
+            params.append(root_id)
+        fetched = {int(r["id"]): r for r in conn.execute(sql, params).fetchall()}
+        order = {fid: rank for rank, fid in enumerate(needed)}
+        extra_rows = sorted(
+            (fetched[fid] for fid in needed if fid in fetched),
+            key=lambda r: order[int(r["id"])],
+        )
+    pool = list(rows) + [r for r in extra_rows if int(r["id"]) not in fts_rank]
+    constant = 60.0
+
+    def rrf_score(row: sqlite3.Row) -> float:
+        fid = int(row["id"])
+        score = 0.0
+        if fid in fts_rank:
+            score += 1.0 / (constant + fts_rank[fid])
+        if fid in vec_rank:
+            score += 1.0 / (constant + vec_rank[fid])
+        return score
+
+    pool.sort(key=rrf_score, reverse=True)
+    return pool[:limit]
+
+
 def search(
     conn: sqlite3.Connection,
     query: str,
@@ -239,18 +380,22 @@ def search(
         return [_row_to_result(row) for row in rows]
 
     match_query = make_fts_query(query)
+    candidate_limit = max(limit * 3, limit)
     if match_query:
         try:
-            rows = search_rows(conn, match_query, limit=limit, ext=ext, root_id=root_id)
+            rows = search_rows(conn, match_query, limit=candidate_limit, ext=ext, root_id=root_id)
         except sqlite3.OperationalError:
             rows = []
         if not rows:
             terms = query_terms(query)
-            rows = search_like_terms(conn, terms, limit=limit, ext=ext, root_id=root_id)
+            rows = search_like_terms(conn, terms, limit=candidate_limit, ext=ext, root_id=root_id)
         if not rows:
-            rows = search_like(conn, query, limit=limit, ext=ext, root_id=root_id)
+            rows = search_like(conn, query, limit=candidate_limit, ext=ext, root_id=root_id)
     else:
-        rows = search_like(conn, "", limit=limit, ext=ext, root_id=root_id)
+        rows = search_like(conn, "", limit=candidate_limit, ext=ext, root_id=root_id)
+    # 混合检索：FTS 候选与语义向量 RRF 融合（无向量/模型不可用时退化为纯 FTS）
+    vec_hits = vector_search(conn, query, top=max(limit * 2, 40))
+    rows = _hybrid_merge(conn, rows, vec_hits, limit=limit, ext=ext, root_id=root_id)
     return [_row_to_result(row) for row in rows]
 
 
@@ -482,21 +627,21 @@ def _sources(hits: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
 def _ollama_context(conn: sqlite3.Connection, hits: list[dict[str, Any]]) -> str:
     config = load_config()
     local = config.get("models", {}).get("local", {})
-    max_chars = int(local.get("context_chars", 2500))
-    max_sources = int(local.get("max_sources", 3))
+    max_chars = int(local.get("context_chars", 6000))
+    max_sources = int(local.get("max_sources", 5))
     parts: list[str] = []
     for hit in hits[:max_sources]:
         row = get_file_by_path(conn, hit["path"])
         chunks: list[sqlite3.Row] = []
         if row is not None:
             chunks = conn.execute(
-                "SELECT text FROM chunks WHERE file_id = ? ORDER BY chunk_index LIMIT 1",
+                "SELECT text FROM chunks WHERE file_id = ? ORDER BY chunk_index LIMIT 2",
                 (int(row["id"]),),
             ).fetchall()
         for chunk in chunks:
             text = re.sub(r"\s+", " ", chunk["text"]).strip()
             if text:
-                parts.append(f"[{len(parts) + 1}] {hit['name']}：{text[:1000]}")
+                parts.append(f"[{len(parts) + 1}] {hit['name']}：{text[:900]}")
         if not chunks and hit.get("snippet"):
             parts.append(f"[{len(parts) + 1}] {hit['name']}：{hit['snippet'][:500]}")
     return "\n\n".join(parts)[:max_chars]

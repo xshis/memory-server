@@ -13,6 +13,7 @@ from typing import Any
 from .config import DEFAULT_CONFIG, config_path, load_config, save_config
 
 DEFAULT_MODEL = "qwen2.5:3b"
+DEFAULT_EMBED_MODEL = "nomic-embed-text"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 
 
@@ -66,6 +67,36 @@ def status() -> dict[str, Any]:
 def model_name(config: dict[str, Any] | None = None) -> str:
     config = config or load_config()
     return str(config.get("models", {}).get("local", {}).get("chat", DEFAULT_MODEL)).strip()
+
+
+def embed_model(config: dict[str, Any] | None = None) -> str:
+    config = config or load_config()
+    return str(config.get("models", {}).get("local", {}).get("embed", DEFAULT_EMBED_MODEL)).strip()
+
+
+def embed(texts: list[str], model: str | None = None, *, timeout: float = 60) -> list[list[float]]:
+    """调用 Ollama 嵌入接口，返回与输入等长的向量列表。不可用则抛异常。"""
+    texts = [str(text) for text in texts]
+    if not texts:
+        return []
+    selected = (model or embed_model()).strip()
+    payload = {"model": selected, "input": texts}
+    try:
+        data = _request("/api/embed", timeout=timeout, payload=payload)
+        vectors = data.get("embeddings") or []
+        if len(vectors) == len(texts):
+            return [[float(value) for value in item] for item in vectors]
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError):
+        pass
+    vectors: list[list[float]] = []
+    for text in texts:
+        data = _request(
+            "/api/embeddings",
+            timeout=timeout,
+            payload={"model": selected, "prompt": text},
+        )
+        vectors.append([float(value) for value in data.get("embedding", [])])
+    return vectors
 
 
 def model_available(model: str, status_data: dict[str, Any] | None = None) -> bool:

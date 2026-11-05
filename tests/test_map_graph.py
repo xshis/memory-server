@@ -75,17 +75,20 @@ class GraphTest(unittest.TestCase):
             self.assertTrue(all(node.get("parent") for node in tag_nodes))
             categories = [node for node in tag_nodes if node["tagKind"] == "category"]
             self.assertTrue(categories)
-            self.assertTrue(all(math.hypot(node["x"], node["z"]) > 500 for node in categories))
+            # 融合球体布局：所有节点（含分类）散布在半径 128~640 的球体体积内
+            self.assertTrue(
+                all(
+                    128 <= math.sqrt(node["x"] ** 2 + node["y"] ** 2 + node["z"] ** 2) <= 640
+                    for node in categories
+                )
+            )
             by_id = {node["id"]: node for node in graph["nodes"]}
             for node in files:
-                base = by_id[node["primary"]]
-                distance = math.sqrt(
-                    (node["x"] - base["x"]) ** 2
-                    + (node["y"] - base["y"]) ** 2
-                    + (node["z"] - base["z"]) ** 2
-                )
-                self.assertLess(distance, 260)
-            self.assertTrue(graph["links"])
+                # 融合球体布局：文件不再围绕所属分类，而是散布在整个球体体积内
+                radius = math.sqrt(node["x"] ** 2 + node["y"] ** 2 + node["z"] ** 2)
+                self.assertGreaterEqual(radius, 128)
+                self.assertLessEqual(radius, 640)
+            self.assertEqual(graph["links"], [])
 
     def test_glyphs(self) -> None:
         self.assertEqual(self.state_glyphs("package.json"), ("P", "PAC"))

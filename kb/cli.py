@@ -327,6 +327,30 @@ def cmd_status(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_embed(args: argparse.Namespace) -> int:
+    from .db import embedding_stats
+    from .embedder import embed_missing
+
+    conn = _connection()
+    try:
+        if args.stats:
+            _print_json(embedding_stats(conn)) if args.json else print(
+                "已嵌入：{embedded}/{embeddable}（模型 {models} 个）".format(**embedding_stats(conn))
+            )
+            return 0
+        stats = embed_missing(conn, limit=args.limit)
+        if args.json:
+            _print_json(stats)
+        else:
+            print(
+                f"[完成] 新嵌入 {stats['embedded']}，失败 {stats['failed']}，"
+                f"耗时 {stats['seconds']}s，模型 {stats['model']}"
+            )
+        return 0 if stats["failed"] == 0 else 1
+    finally:
+        conn.close()
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     checks = run_doctor(include_feishu=args.feishu, include_ollama=args.ollama)
     if args.json:
@@ -877,6 +901,12 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--limit", type=int, default=5)
     ask_parser.add_argument("--json", action="store_true")
     ask_parser.set_defaults(func=cmd_ask)
+
+    embed_parser = sub.add_parser("embed", help="给文件正文计算语义向量（混合检索用，可反复执行断点续跑）")
+    embed_parser.add_argument("--limit", type=int, default=0, help="只处理前 N 个（调试用）")
+    embed_parser.add_argument("--stats", action="store_true", help="只查看嵌入进度")
+    embed_parser.add_argument("--json", action="store_true")
+    embed_parser.set_defaults(func=cmd_embed)
 
     status_parser = sub.add_parser("status", help="查看索引状态")
     status_parser.add_argument("--json", action="store_true")

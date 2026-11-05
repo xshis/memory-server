@@ -88,6 +88,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
             event_id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS file_embeddings (
+            file_id INTEGER PRIMARY KEY,
+            model TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            norm REAL NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        );
         """
     )
     try:
@@ -166,7 +176,48 @@ def ensure_allowed_path(conn: sqlite3.Connection, path: str | Path) -> Path:
 def _delete_file_row(conn: sqlite3.Connection, file_id: int) -> None:
     conn.execute("DELETE FROM files_fts WHERE rowid = ?", (file_id,))
     conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
+    try:
+        conn.execute("DELETE FROM file_embeddings WHERE file_id = ?", (file_id,))
+    except sqlite3.OperationalError:
+        pass  # 旧库没有向量表时容忍
     conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+
+
+def upsert_file_embedding(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int,
+    model: str,
+    dim: int,
+    norm: float,
+    data: bytes,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO file_embeddings(file_id, model, dim, norm, data, created_at)
+        VALUES(?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_id) DO UPDATE SET
+            model=excluded.model, dim=excluded.dim, norm=excluded.norm,
+            data=excluded.data, created_at=excluded.created_at
+        """,
+        (int(file_id), str(model), int(dim), float(norm), sqlite3.Binary(data), now_iso()),
+    )
+
+
+def embedding_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM files WHERE content_chars > 0) AS embeddable,
+            (SELECT COUNT(*) FROM file_embeddings) AS embedded,
+            (SELECT COUNT(DISTINCT model) FROM file_embeddings) AS models
+        """
+    ).fetchone()
+    return {
+        "embeddable": int(row["embeddable"] or 0),
+        "embedded": int(row["embedded"] or 0),
+        "models": int(row["models"] or 0),
+    }
 
 
 def delete_file_by_path(conn: sqlite3.Connection, path: str | Path) -> bool:
@@ -255,6 +306,11 @@ def upsert_file(
         )
         conn.execute("DELETE FROM files_fts WHERE rowid = ?", (file_id,))
         conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
+        try:
+            conn.execute("DELETE FROM file_embeddings WHERE file_id = ?", (file_id,))
+        except sqlite3.OperationalError:
+            pass  # 旧库没有向量表时容忍
+        conn.execute("DELETE FROM file_embeddings WHERE file_id = ?", (file_id,))
 
     conn.execute(
         "INSERT INTO files_fts(rowid, name, rel_path, content) VALUES(?, ?, ?, ?)",
