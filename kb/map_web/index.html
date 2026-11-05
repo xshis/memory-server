@@ -859,6 +859,51 @@ function rgbaColor(hex, alpha) {
   return `rgba(${red},${green},${blue},${alpha})`;
 }
 
+function shadeColor(hex, f) {
+  const value = String(hex || '#60a5fa').replace('#', '');
+  const full = value.length === 3 ? value.split('').map(ch => ch + ch).join('') : value;
+  const number = parseInt(full, 16) || 0;
+  const target = f > 0 ? 255 : 0;
+  const a = Math.abs(f);
+  const mix = c => Math.round(c + (target - c) * a);
+  return `rgb(${mix((number >> 16) & 255)},${mix((number >> 8) & 255)},${mix(number & 255)})`;
+}
+
+const beadCache = new Map();
+const BEAD_SPRITE = 64;
+const BEAD_CORE = 13;
+function beadSprite(color) {
+  let sprite = beadCache.get(color);
+  if (sprite) return sprite;
+  const c = document.createElement('canvas');
+  c.width = c.height = BEAD_SPRITE;
+  const g = c.getContext('2d');
+  const half = BEAD_SPRITE / 2;
+  const halo = g.createRadialGradient(half, half, BEAD_CORE * .6, half, half, half);
+  halo.addColorStop(0, rgbaColor(color, .48));
+  halo.addColorStop(.45, rgbaColor(color, .16));
+  halo.addColorStop(1, rgbaColor(color, 0));
+  g.fillStyle = halo;
+  g.fillRect(0, 0, BEAD_SPRITE, BEAD_SPRITE);
+  const body = g.createRadialGradient(half - BEAD_CORE * .38, half - BEAD_CORE * .42, BEAD_CORE * .12, half, half, BEAD_CORE);
+  body.addColorStop(0, shadeColor(color, .8));
+  body.addColorStop(.42, shadeColor(color, .1));
+  body.addColorStop(1, shadeColor(color, -.55));
+  g.beginPath();
+  g.arc(half, half, BEAD_CORE, 0, Math.PI * 2);
+  g.fillStyle = body;
+  g.fill();
+  g.strokeStyle = shadeColor(color, .6);
+  g.lineWidth = 2.2;
+  g.stroke();
+  g.beginPath();
+  g.arc(half + BEAD_CORE * .32, half + BEAD_CORE * .4, BEAD_CORE * .15, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(255,255,255,.4)';
+  g.fill();
+  beadCache.set(color, c);
+  return c;
+}
+
 function drawNebulae() {
   const items = [];
   for (const node of visibleNodes) {
@@ -1014,20 +1059,19 @@ function draw(dt) {
     const showTagLabel = node.kind === 'tag' && (
       ['category', 'project', 'recommend'].includes(node.tagKind) || isFocus || isNeighbor
     );
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    let glyphColor = '#f2f7ff';
     if (node.kind === 'search') {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
       ctx.globalAlpha = alpha * .95;
       ctx.fillStyle = '#fb7185';
       ctx.fill();
     } else {
+      const sprite = beadSprite(node.color || '#b4c4da');
+      const s = radius / BEAD_CORE * BEAD_SPRITE;
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = 'rgba(12, 20, 38, .94)';
-      ctx.fill();
-      ctx.strokeStyle = node.color || '#b4c4da';
-      ctx.lineWidth = Math.max(1.6, radius * 0.34);
-      ctx.globalAlpha = alpha;
-      ctx.stroke();
+      ctx.drawImage(sprite, p.x - s / 2, p.y - s / 2, s, s);
+      glyphColor = '#0d1830';
     }
     if (isFocus) {
       ctx.beginPath();
@@ -1066,7 +1110,7 @@ function draw(dt) {
         }
         ctx.globalAlpha = alpha * (isSelected ? 1 : (isNeighbor ? .98 : .95));
         ctx.font = `600 ${fontSize.toFixed(1)}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
-        ctx.fillStyle = '#f2f7ff';
+        ctx.fillStyle = glyphColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(text, p.x, p.y + 0.5);
