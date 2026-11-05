@@ -941,7 +941,7 @@ function draw(dt) {
     if (item.p.depth > maxDepth) maxDepth = item.p.depth;
   }
   const span = Math.max(1, maxDepth - minDepth);
-  const fogFor = p => 1 - ((p.depth - minDepth) / span) * 0.62;
+  const fogFor = p => 1 - ((p.depth - minDepth) / span) * 0.35;
   const visibilityFor = node => {
     if (!focusedCluster) return 1;
     return clusterOf(node) === focusedCluster ? 1 : Math.max(0, 1 - focusAmount);
@@ -1006,7 +1006,7 @@ function draw(dt) {
     if (vis <= 0.02) continue;
     const fog = fogFor(p);
     const alpha = vis * fog * dimFactorOf(node);
-    const minRadius = node.kind === 'file' ? 3.6 : 1.2;
+    const minRadius = node.kind === 'file' ? 4.2 : 1.4;
     const radius = Math.max(minRadius, (node.radius || 5) * p.scale);
     const isDragged = nodeDrag && nodeDrag.node.id === node.id;
     const isFocus = (focus && node.id === focus.id) || isDragged;
@@ -1021,12 +1021,12 @@ function draw(dt) {
       ctx.fillStyle = '#fb7185';
       ctx.fill();
     } else {
-      ctx.globalAlpha = alpha * .9;
-      ctx.fillStyle = 'rgba(5, 11, 22, .62)';
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(12, 20, 38, .94)';
       ctx.fill();
-      ctx.strokeStyle = node.color || '#94a3b8';
-      ctx.lineWidth = Math.max(1, radius * 0.3);
-      ctx.globalAlpha = alpha * .95;
+      ctx.strokeStyle = node.color || '#b4c4da';
+      ctx.lineWidth = Math.max(1.6, radius * 0.34);
+      ctx.globalAlpha = alpha;
       ctx.stroke();
     }
     if (isFocus) {
@@ -1058,15 +1058,15 @@ function draw(dt) {
         const maxByWidth = (radius * 1.5) / (Math.max(1, text.length) * 0.62);
         let fontSize;
         if (text.length > 1) {
-          fontSize = Math.min(11, radius * 1.7, maxByWidth);
-          if (fontSize < 5.5) continue;
+          fontSize = Math.min(12, radius * 1.8, maxByWidth);
+          if (fontSize < 6) continue;
         } else {
-          fontSize = Math.max(5.5, Math.min(11, radius * 1.7, maxByWidth));
+          fontSize = Math.max(6, Math.min(12, radius * 1.8, maxByWidth));
           if (fontSize > radius * 1.9) continue;
         }
-        ctx.globalAlpha = alpha * (isSelected ? 1 : (isNeighbor ? .95 : .88));
+        ctx.globalAlpha = alpha * (isSelected ? 1 : (isNeighbor ? .98 : .95));
         ctx.font = `600 ${fontSize.toFixed(1)}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
-        ctx.fillStyle = 'rgba(235, 244, 255, .96)';
+        ctx.fillStyle = '#f2f7ff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(text, p.x, p.y + 0.5);
@@ -1117,11 +1117,11 @@ function draw(dt) {
   for (const item of fileLabels) {
     const {node, p} = item;
     const forced = (selected && node.id === selected.id) || (hovered && node.id === hovered.id);
-    const radius = Math.max(3.6, (node.radius || 4) * p.scale);
+    const radius = Math.max(4.2, (node.radius || 4) * p.scale);
     let text = String(node.label || '');
     if (text.length > 9) text = text.slice(0, 8) + '…';
-    const size = forced ? 11 : 9;
-    ctx.font = `500 ${size}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
+    const size = forced ? 12 : 10;
+    ctx.font = `600 ${size}px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif`;
     const textWidth = ctx.measureText(text).width;
     const gap = 5;
     const candidates = [
@@ -1151,13 +1151,13 @@ function draw(dt) {
     }
     if (!chosen) continue;
     occupied.push(chosen.rect);
-    ctx.globalAlpha = item.alpha * (forced ? 1 : .9);
+    ctx.globalAlpha = item.alpha * (forced ? 1 : .95);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(3, 8, 18, .9)';
+    ctx.strokeStyle = 'rgba(3, 8, 18, .92)';
     ctx.strokeText(text, chosen.x, chosen.y);
-    ctx.fillStyle = forced ? '#f8fbff' : '#dce9fa';
+    ctx.fillStyle = forced ? '#ffffff' : '#e8f1fd';
     ctx.fillText(text, chosen.x, chosen.y);
   }
   ctx.globalAlpha = 1;
