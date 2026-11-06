@@ -141,6 +141,8 @@ class _ChangeBuffer:
         if updated or removed or errors:
             print(f"[{time.strftime('%H:%M:%S')}] 增量：入库 {updated}，删除 {removed}，错误 {errors}",
                   flush=True)
+            from .auto_embed import maybe_auto_embed
+            maybe_auto_embed(app_config.HOME, reason="watch-events")
 
 
 def run_event_watch() -> int:

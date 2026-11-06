@@ -516,6 +516,7 @@ const ctx = canvas.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 const statsEl = document.getElementById('stats');
 const hudEl = document.getElementById('hud');
+let embedInfo = null;
 const toastEl = document.getElementById('toast');
 const chatLog = document.getElementById('chatLog');
 const chatInput = document.getElementById('chatInput');
@@ -649,12 +650,23 @@ function resize() {
 
 function statsHtml(summary) {
   if (!summary) return '加载中…';
-  return `文件 <b>${fmt(summary.files)}</b> · 已索引 <b>${fmt(summary.indexed)}</b> · 节点 <b>${fmt(summary.nodes)}</b> · 标签 <b>${fmt(summary.tags)}</b> · 展示 <b>${fmt(summary.shown_files)}</b> · ${summary.bytes_text}`;
+  let html = `文件 <b>${fmt(summary.files)}</b> · 已索引 <b>${fmt(summary.indexed)}</b> · 节点 <b>${fmt(summary.nodes)}</b> · 标签 <b>${fmt(summary.tags)}</b> · 展示 <b>${fmt(summary.shown_files)}</b> · ${summary.bytes_text}`;
+  if (embedInfo && embedInfo.embeddable > 0 &&
+      (embedInfo.running || embedInfo.embedded < embedInfo.embeddable)) {
+    const pct = Math.round(embedInfo.embedded * 100 / embedInfo.embeddable);
+    html += ` · 语义嵌入 <b>${embedInfo.running ? '补算中 ' : ''}${pct}%</b>`;
+  }
+  return html;
+}
+
+function renderStats() {
+  if (!graph) return;
+  statsEl.innerHTML = statsHtml(graph.summary);
 }
 
 function updateStats() {
   if (!graph) return;
-  statsEl.innerHTML = statsHtml(graph.summary);
+  renderStats();
   hudEl.innerHTML = `版本 ${graph.generated_at}<br>${autoRotate ? '自动旋转中' : '已暂停旋转'} · 拖拽旋转 / 滚轮缩放 · 拖星点回弹 / 鼠标靠近跟随 · 悬浮看完整路径`;
 }
 
@@ -2386,10 +2398,14 @@ async function refreshIndex() {
 function pollStatus(force) {
   clearTimeout(statusTimer);
   fetch('/api/status', {cache: 'no-store'}).then(r => r.json()).then(data => {
+    embedInfo = data.embedding || embedInfo;
     if (data.indexing) {
       hudEl.innerHTML = '正在更新索引… 页面会自动刷新';
-    } else if (force || (data.version && data.version !== lastVersion)) {
-      loadGraph();
+    } else {
+      renderStats();
+      if (force || (data.version && data.version !== lastVersion)) {
+        loadGraph();
+      }
     }
     statusTimer = setTimeout(pollStatus, 5000);
   }).catch(() => {

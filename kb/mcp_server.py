@@ -149,6 +149,11 @@ def run_mcp(transport: str = "stdio", host: str | None = None, port: int | None 
         server.run(transport="stdio")
         return
 
+    from .auto_embed import MIN_START_GAP, maybe_auto_embed
+    from .config import HOME as _KB_HOME
+
+    maybe_auto_embed(_KB_HOME, reason="mcp-start", gap_threshold=MIN_START_GAP)
+
     host = host or str(config["mcp"].get("host", "127.0.0.1"))
     port = port or int(config["mcp"].get("port", 8766))
     web_host = "127.0.0.1"

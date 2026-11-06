@@ -630,6 +630,8 @@ class GraphState:
             return graph
 
     def status(self) -> Dict[str, Any]:
+        from .auto_embed import embedding_brief
+
         with self.lock:
             graph = self.graph or {}
             return {
@@ -638,6 +640,7 @@ class GraphState:
                 "summary": graph.get("summary", {}),
                 "indexing": self.indexing,
                 "progress": dict(self.progress),
+                "embedding": embedding_brief(self.db_path),
                 "error": self.last_error,
             }
 
@@ -1303,6 +1306,8 @@ def run_map(args: Any) -> int:
     if args.index_on_start:
         print(state.start_index()["message"], flush=True)
     threading.Thread(target=state.watch, daemon=True).start()
+    from .auto_embed import MIN_START_GAP, maybe_auto_embed
+    maybe_auto_embed(kb, reason="map-start", gap_threshold=MIN_START_GAP)
 
     Handler.state = state
     Handler.web_dir = Path(__file__).resolve().parent / "map_web"

@@ -223,6 +223,8 @@ def cmd_index(args: argparse.Namespace) -> int:
             return 1
         progress = None if args.quiet else print
         stats = index_roots(conn, roots, full=args.full, progress=progress)
+        from .auto_embed import maybe_auto_embed
+        maybe_auto_embed(app_config.HOME, reason="index")
         if args.json:
             _print_json(stats.as_dict())
         return 0
@@ -329,7 +331,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_embed(args: argparse.Namespace) -> int:
     from .db import embedding_stats
-    from .embedder import embed_missing
 
     conn = _connection()
     try:
@@ -338,6 +339,19 @@ def cmd_embed(args: argparse.Namespace) -> int:
                 "已嵌入：{embedded}/{embeddable}（模型 {models} 个）".format(**embedding_stats(conn))
             )
             return 0
+    finally:
+        conn.close()
+
+    from .embedder import embed_missing
+    from .index_lock import IndexLock
+
+    lock = IndexLock(app_config.HOME / "data" / "embed.lock")
+    if not lock.acquire():
+        pid = lock.holder_pid()
+        print(f"已有 kb embed 在运行（PID {pid or '未知'}），本次跳过。")
+        return 0
+    conn = _connection()
+    try:
         stats = embed_missing(conn, limit=args.limit)
         if args.json:
             _print_json(stats)
@@ -349,6 +363,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
         return 0 if stats["failed"] == 0 else 1
     finally:
         conn.close()
+        lock.release()
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -430,6 +445,8 @@ def _watch_scan(conn) -> float:
         if stats.indexed or stats.removed:
             print(f"[{time.strftime('%H:%M:%S')}] 入库 {stats.indexed}，"
                   f"删除 {stats.removed}，错误 {stats.errors}", flush=True)
+        from .auto_embed import maybe_auto_embed
+        maybe_auto_embed(app_config.HOME, reason="watch")
     except Exception as exc:  # noqa: BLE001
         print(f"[错误] {exc}", flush=True)
     finally:

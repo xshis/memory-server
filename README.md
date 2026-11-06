@@ -8,7 +8,7 @@
 当前版本已实现：
 
 - 环境自检 `kb doctor`
-- 语义混合检索：FTS5 关键词 + fastembed 向量（bge-small-zh，ONNX 本地）RRF 融合召回，`kb embed` 一键回填/断点续跑
+- 语义混合检索：FTS5 关键词 + fastembed 向量（bge-small-zh，ONNX 本地）RRF 融合召回；`kb embed` 一键回填/断点续跑，索引/监听增量后自动补算，服务启动自动兜底（日志 `logs/auto-embed.log`）
 - 图片整理 `kb organize --strategy image`（OpenCV 分类：人物/风景/文档截图/其他）
 - 本地模型问答 `kb model` + Ollama（可选；不装则用摘录式）
 - 一键环境检测与接入引导 `kb setup`（权限、豆包、飞书、索引、服务）
