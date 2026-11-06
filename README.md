@@ -100,6 +100,12 @@ kb start
 - 场景：重视隐私、经常没网、只想快速问资料；只找文件可以不装，默认用摘录式搜索。
 - 非交互安装可设 `KB_OLLAMA_MODEL=qwen2.5:1.5b` 指定模型，`KB_WITH_OLLAMA=0` 跳过。
 
+### 安装时的语义检索依赖
+
+- 默认安装 `fastembed`（本地向量引擎，不联网可用）：首次 `kb index` 后会自动下载嵌入模型 `bge-small-zh-v1.5`（约 100MB，只下一次），随后所有新文件自动补算向量。
+- 下载走 HuggingFace，网络不通时会自动走镜像源；仍失败可设环境变量 `HF_ENDPOINT=https://hf-mirror.com` 后重试。
+- 跳过语义检索（纯关键词搜索）：`KB_WITH_EMBED=0 bash install.sh`（Windows：`$env:KB_WITH_EMBED="0"`）。
+
 ## 脚本一览
 
 | 文件 | 平台 | 用途 |

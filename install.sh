@@ -50,7 +50,15 @@ fi
 
 echo "安装依赖 ..."
 "$PY" -m pip install --upgrade pip >/dev/null
-"$PY" -m pip install -e .
+if [ "${KB_WITH_EMBED:-1}" = "1" ]; then
+  if ! "$PY" -m pip install -e ".[embed]"; then
+    echo "  [警告] 语义检索依赖（fastembed）安装失败，退回基础安装（仅关键词搜索）。"
+    echo "  可稍后重试：$PY -m pip install -e '.[embed]'"
+    "$PY" -m pip install -e .
+  fi
+else
+  "$PY" -m pip install -e .
+fi
 
 if [ "${KB_WITH_DOCS:-0}" = "1" ]; then
   echo "安装办公文档解析依赖 ..."

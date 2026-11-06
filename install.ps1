@@ -53,7 +53,16 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "安装依赖 ..."
 & $py -m pip install --upgrade pip | Out-Null
-& $py -m pip install -e .
+if ($env:KB_WITH_EMBED -ne "0") {
+    & $py -m pip install -e ".[embed]"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [警告] 语义检索依赖（fastembed）安装失败，退回基础安装（仅关键词搜索）。"
+        Write-Host "  可稍后重试：$py -m pip install -e `".[embed]`""
+        & $py -m pip install -e .
+    }
+} else {
+    & $py -m pip install -e .
+}
 
 if ($env:KB_WITH_DOCS -eq "1") {
     Write-Host "安装办公文档解析依赖 ..."
