@@ -647,6 +647,7 @@ class GraphState:
         self._rebuilding = False
         self._rebuild_pending = False
         self.build_lock = threading.Lock()
+        self._last_rebuild_at = 0.0
         self.progress: Dict[str, Any] = {"active": False, "percent": 0, "message": ""}
 
     def kb_python(self) -> str:
@@ -660,6 +661,7 @@ class GraphState:
 
     def rebuild(self) -> None:
         with self.build_lock:
+            self._last_rebuild_at = time.time()
             self._set_progress(True, 0, "准备读取索引")
             try:
                 sink: List[Dict[str, Any]] = []
@@ -678,6 +680,8 @@ class GraphState:
                 self._set_progress(False, 100, "完成")
 
     def get_graph(self) -> Dict[str, Any]:
+        """返回图数据。有缓存立即返回（重建期间给旧版，前端按 version 轮询会再拉新）；
+        仅在首次无缓存时才同步构建，避免前端长时间挂在请求上。"""
         with self.lock:
             if self.graph is not None:
                 return self.graph
@@ -937,7 +941,8 @@ class GraphState:
                 continue
             with self.lock:
                 changed = signature != self.signature
-            if changed and not self.indexing:
+            # 重建节流：嵌入/索引会频繁改 kb.db，两次重建至少间隔 120s，避免 CPU 空转
+            if changed and not self.indexing and time.time() - self._last_rebuild_at >= 120:
                 self.rebuild()
 
     def run_kb(self, args: List[str], *, timeout: float) -> Dict[str, Any]:
