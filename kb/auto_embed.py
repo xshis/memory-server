@@ -24,8 +24,11 @@ MIN_START_GAP = 1000  # 服务启动兜底：缺口超过这个数才自动补�
 MIN_SPAWN_INTERVAL = 900  # 两次自动补算至少间隔 15 分钟：文件持续变动的机器上让缺口累积一起补
 BIG_GAP_BYPASS = 3000     # 缺口超过 3000 立即补，不受节流限制
 
+# kb.db 已达 15GB+（files.content 存正文），COUNT(*) 全表扫描在冷缓存/写入期要数十秒，
+# 而前端每 5s 轮询一次 status。files.id 是 INTEGER PRIMARY KEY，MAX(id) 走索引 O(log n)，
+# 作为 embeddable 估算值足够（顶栏进度徽章用；精确统计用 `kb embed --stats`）。
 _STATS_QUERY = (
-    "SELECT (SELECT COUNT(*) FROM files WHERE content_chars > 0) AS embeddable, "
+    "SELECT (SELECT COALESCE(MAX(id),0) FROM files) AS embeddable, "
     "(SELECT COUNT(*) FROM file_embeddings) AS embedded"
 )
 

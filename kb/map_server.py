@@ -644,6 +644,7 @@ class GraphState:
         self._embed_ids: List[int] = []
         self._embed_paths: List[str] = []
         self._embed_matrix: Any = None
+        self._embed_brief_cache: Optional[Tuple[float, Dict[str, Any]]] = None
         self._rebuilding = False
         self._rebuild_pending = False
         self.build_lock = threading.Lock()
@@ -704,8 +705,8 @@ class GraphState:
             return graph
 
     def status(self) -> Dict[str, Any]:
-        from .auto_embed import embedding_brief
-
+        # 必须在取 self.lock 之前算好 brief：它内部也要抢 self.lock，嵌套会死锁（2026-11-09 实测踩过）
+        embedding = self._embedding_brief_cached()
         with self.lock:
             graph = self.graph or {}
             return {
@@ -714,9 +715,25 @@ class GraphState:
                 "summary": graph.get("summary", {}),
                 "indexing": self.indexing,
                 "progress": dict(self.progress),
-                "embedding": embedding_brief(self.db_path),
+                "embedding": embedding,
                 "error": self.last_error,
             }
+
+    def _embedding_brief_cached(self) -> Dict[str, Any]:
+        """embedding_brief 带 15s 纯 TTL 缓存：kb.db 已 15GB+，COUNT 全表扫描在冷缓存/写入期要分钟级，
+        而前端每 5s 轮询一次 status。嵌入进行期 db mtime 持续变化，所以不能用 mtime 作缓存键，纯 TTL 即可
+        （顶栏进度徽章滞后 15s 无感知）。"""
+        from .auto_embed import embedding_brief
+
+        now = time.time()
+        with self.lock:
+            cached = self._embed_brief_cache
+            if cached and now - cached[0] < 15:
+                return cached[1]
+        brief = embedding_brief(self.db_path)
+        with self.lock:
+            self._embed_brief_cache = (now, brief)
+        return brief
 
     def assistant_profile(self) -> Dict[str, str]:
         from .config import load_config
@@ -1492,6 +1509,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_map(args: Any) -> int:
+    try:  # 卡死诊断保险：kill -SIGUSR1 <map_pid> 可在 map.log 打出全部线程 Python 栈
+        import faulthandler
+        import signal
+
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
     kb = Path(args.kb).expanduser().resolve()
     db_path = kb / "data" / "kb.db"
     if not db_path.is_file():
