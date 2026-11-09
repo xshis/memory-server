@@ -165,6 +165,28 @@ class MaybeAutoEmbedTest(unittest.TestCase):
         self.assertFalse(kicked)
         popen.assert_not_called()
 
+    def test_spawn_throttled_within_interval(self) -> None:
+        """15 分钟窗口内且缺口 <3000：第二次触发被节流（今天实测曾被每 1~2 分钟拉起一次）。"""
+        with self._patch_backend(), \
+                mock.patch.object(auto_embed.subprocess, "Popen"):
+            first = auto_embed.maybe_auto_embed(self.home, reason="first")
+        self.assertTrue(first)
+        with self._patch_backend(), \
+                mock.patch.object(auto_embed.subprocess, "Popen") as popen:
+            second = auto_embed.maybe_auto_embed(self.home, reason="second")
+        self.assertFalse(second)
+        popen.assert_not_called()
+
+    def test_spawn_limits_threads(self) -> None:
+        """自动补算的子进程必须限 OMP 线程（默认吃满全核导致发热）。"""
+        with self._patch_backend(), \
+                mock.patch.object(auto_embed.subprocess, "Popen") as popen:
+            auto_embed.maybe_auto_embed(self.home, reason="test")
+        popen.assert_called_once()
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env.get("OMP_NUM_THREADS"), "2")
+        self.assertEqual(env.get("OMP_THREAD_LIMIT"), "2")
+
     def test_startup_threshold_requires_big_gap(self) -> None:
         with self._patch_backend(), \
                 mock.patch.object(auto_embed.subprocess, "Popen"):

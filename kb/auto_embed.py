@@ -1,12 +1,14 @@
 """自动向量补算：在索引/服务生命周期里静默拉起 `kb embed` 补齐缺失嵌入。
 
 - 真正干活的仍是 `kb embed`（幂等、断点续跑、持有 data/embed.lock），本模块只负责时机。
-- 每次触发前依次检查：是否已有嵌入在跑（flock）→ 缺口是否够大 → 开关是否打开 → 嵌入后端是否可用。
+- 每次触发前依次检查：是否已有嵌入在跑（flock）→ 缺口是否够大 → 距上次触发是否满 15 分钟（缺口≥3000 豁免）→ 开关是否打开 → 嵌入后端是否可用。
+- 触发节奏：data/embed-stamp.json 记录上次拉起时间；嵌入子进程限 OMP_NUM_THREADS=2（默认吃满全核会发烫）。
 - 开关：环境变量 KB_AUTO_EMBED=0/1 优先，其次 config.json 的 embed.auto（默认开）。
 - 触发点：kb index 完成、watch 一轮扫描/事件增量完成、map/mcp 服务启动兜底。
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -17,7 +19,10 @@ from typing import Any
 
 EMBED_LOCK_NAME = "embed.lock"
 EMBED_LOG_NAME = "auto-embed.log"
+EMBED_STAMP_NAME = "embed-stamp.json"
 MIN_START_GAP = 1000  # 服务启动兜底：缺口超过这个数才自动补，避免频繁小跑
+MIN_SPAWN_INTERVAL = 900  # 两次自动补算至少间隔 15 分钟：文件持续变动的机器上让缺口累积一起补
+BIG_GAP_BYPASS = 3000     # 缺口超过 3000 立即补，不受节流限制
 
 _STATS_QUERY = (
     "SELECT (SELECT COUNT(*) FROM files WHERE content_chars > 0) AS embeddable, "
@@ -75,6 +80,28 @@ def _auto_enabled() -> bool:
         return True
 
 
+def _read_stamp(kb_home: Path) -> dict[str, Any]:
+    try:
+        raw = (Path(kb_home) / "data" / EMBED_STAMP_NAME).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_stamp(kb_home: Path, **fields: Any) -> None:
+    path = Path(kb_home) / "data" / EMBED_STAMP_NAME
+    try:
+        data = _read_stamp(kb_home)
+        data.update(fields)
+        data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
 def _backend_available() -> bool:
     try:
         from .embedder import fastembed_available
@@ -94,7 +121,17 @@ def maybe_auto_embed(kb_home: Path, *, reason: str, gap_threshold: int = 1) -> b
     db_path = kb_home / "data" / "kb.db"
     if not db_path.is_file() or embed_running(kb_home):
         return False
-    if embedding_brief(db_path)["gap"] < max(1, int(gap_threshold)):
+    brief = embedding_brief(db_path)
+    if brief["gap"] < max(1, int(gap_threshold)):
+        return False
+    # 触发节流：文件持续变动的机器上，让缺口累积到下次一起补（曾因此每 1~2 分钟拉起一次
+    # 300% CPU 的嵌入进程导致整机发热）。大缺口不受节流限制。
+    now = time.time()
+    try:
+        last_spawn = float(_read_stamp(kb_home).get("last_spawn") or 0)
+    except (TypeError, ValueError):
+        last_spawn = 0.0
+    if now - last_spawn < MIN_SPAWN_INTERVAL and brief["gap"] < BIG_GAP_BYPASS:
         return False
     if not _auto_enabled() or not _backend_available():
         return False
@@ -104,7 +141,7 @@ def maybe_auto_embed(kb_home: Path, *, reason: str, gap_threshold: int = 1) -> b
         handle = (logs_dir / EMBED_LOG_NAME).open("a", encoding="utf-8")
     except OSError:
         return False
-    handle.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} 自动补算（{reason}）====\n")
+    handle.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} 自动补算（{reason}，缺口 {brief['gap']}）====\n")
     handle.flush()
     popen_kwargs: dict[str, Any] = {
         "stdout": handle,
@@ -112,6 +149,11 @@ def maybe_auto_embed(kb_home: Path, *, reason: str, gap_threshold: int = 1) -> b
         "stdin": subprocess.DEVNULL,
         "cwd": str(kb_home),
     }
+    # 限线程：fastembed/onnxruntime 默认吃满所有核（实测 315%），自动补算限 2 核防发烫
+    env = dict(os.environ)
+    env.setdefault("OMP_NUM_THREADS", "2")
+    env.setdefault("OMP_THREAD_LIMIT", "2")
+    popen_kwargs["env"] = env
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
@@ -122,4 +164,5 @@ def maybe_auto_embed(kb_home: Path, *, reason: str, gap_threshold: int = 1) -> b
         handle.close()
         return False
     handle.close()  # 子进程持有副本；父进程不泄露 fd
+    _write_stamp(kb_home, last_spawn=now, last_reason=reason)
     return True
