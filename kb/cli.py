@@ -350,6 +350,11 @@ def cmd_embed(args: argparse.Namespace) -> int:
         pid = lock.holder_pid()
         print(f"已有 kb embed 在运行（PID {pid or '未知'}），本次跳过。")
         return 0
+    try:
+        # 嵌入让路交互：与本地模型等前台进程抢 CPU 时，调度器优先保前台（Windows 无 os.nice）
+        os.nice(10)
+    except (AttributeError, OSError):
+        pass
     conn = _connection()
     try:
         stats = embed_missing(conn, limit=args.limit)
