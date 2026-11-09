@@ -269,7 +269,13 @@ function rebuildVisible() {
 }
 
 async function loadGraph() {
-  const response = await fetch('/api/graph', {cache: 'no-store'});
+  let response;
+  try {
+    response = await fetch('/api/graph', {cache: 'no-store'});
+  } catch (error) {
+    // 服务重启/网络瞬断：返回 false 让启动流程重试，而不是把页面永久卡在加载遮罩
+    return false;
+  }
   const data = await response.json();
   if (data.error) {
     document.getElementById('loadingText').textContent = '读取失败：' + data.error;
@@ -2347,10 +2353,12 @@ resize();
 startLoadingProgress();
 refreshSelfcheck();
 selfcheckTimer = setInterval(refreshSelfcheck, 60000);
-loadGraph().then(ok => {
+/* 启动：加载失败自动重试（服务重启、数据库瞬间锁都可能导致首次加载失败） */
+async function bootMap() {
+  const ok = await loadGraph();
   if (ok === false) {
-    clearInterval(loadingTimer);
-    loadingTimer = null;
+    document.getElementById('loadingText').textContent = '连接服务失败，3秒后自动重试…';
+    setTimeout(bootMap, 3000);
     return;
   }
   allNodes = (graph ? graph.nodes : []).concat(extraNodes);
@@ -2358,7 +2366,15 @@ loadGraph().then(ok => {
   renderLegend();
   pollStatus(false);
   stopLoadingProgress();
+}
+window.addEventListener('error', event => {
+  const loading = document.getElementById('loading');
+  const text = document.getElementById('loadingText');
+  if (text && loading && loading.style.display !== 'none') {
+    text.textContent = '脚本错误：' + (event.message || '未知错误') + '（可刷新重试）';
+  }
 });
+bootMap();
 
 /* ---- 分类图例（P0）：点击聚焦分类，悬停压暗其他分类 ---- */
 function renderLegend() {
