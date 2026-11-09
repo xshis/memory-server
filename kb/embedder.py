@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from typing import Any, Callable
 
@@ -27,6 +28,22 @@ def fastembed_available() -> bool:
     return _FASTEMBED_AVAILABLE
 
 
+def _fastembed_cache_dir() -> str:
+    """模型缓存目录：配置 embed_cache_dir 优先，默认 ~/.cache/fastembed。
+
+    fastembed 0.9.x 默认用系统临时目录（/var/folders/.../T），会被 macOS 定期清理
+    导致重复下载；固定到家目录下可复用，也方便分享包预置模型离线安装。
+    """
+    from .config import load_config
+
+    configured = str(
+        load_config().get("models", {}).get("local", {}).get("embed_cache_dir", "")
+    ).strip()
+    if configured:
+        return os.path.expanduser(configured)
+    return os.path.join(os.path.expanduser("~"), ".cache", "fastembed")
+
+
 def _fastembed_model():
     global _TEXT_EMBEDDING
     if not _FASTEMBED_AVAILABLE:
@@ -38,11 +55,12 @@ def _fastembed_model():
             load_config().get("models", {}).get("local", {}).get("embed", "")
         ).strip()
         candidates = [configured, DEFAULT_FASTEMBED_MODEL] if configured else [DEFAULT_FASTEMBED_MODEL]
+        cache_dir = _fastembed_cache_dir()
         for candidate in candidates:
             if not candidate or "/" not in candidate:
                 continue  # ollama 风格的名字（如 nomic-embed-text）不是 fastembed 模型
             try:
-                _TEXT_EMBEDDING = TextEmbedding(model_name=candidate)
+                _TEXT_EMBEDDING = TextEmbedding(model_name=candidate, cache_dir=cache_dir)
                 return _TEXT_EMBEDDING
             except Exception:  # noqa: BLE001
                 continue
