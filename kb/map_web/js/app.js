@@ -9,6 +9,31 @@ let minimalMode = false;
 try { minimalMode = localStorage.getItem('kb-minimal') === '1'; } catch (error) { minimalMode = false; }
 // 脑图内搜索词：非匹配节点淡出到 5%（Obsidian graph 的搜索过滤交互）
 let mapQuery = '';
+// P1：局部视图（选中文件的语义邻居+同目录聚光）、时间着色、新文件生长动效
+let localViewId = null;
+let timeColorMode = false;
+try { timeColorMode = localStorage.getItem('kb-timecolor') === '1'; } catch (error) { timeColorMode = false; }
+const settledNodes = new Set();
+const spawnAnim = new Map();
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  const u = t - 1;
+  return 1 + c3 * u * u * u + c1 * u * u;
+}
+const TIME_PALETTE = [
+  {days: 7, color: '#fbbf24'},   // 近7天：暖金
+  {days: 30, color: '#34d399'},  // 30天内：翠绿
+  {days: 90, color: '#38bdf8'},  // 90天内：天蓝
+  {days: 365, color: '#818cf8'}, // 1年内：靛蓝
+  {days: Infinity, color: '#64748b'}, // 更早：灰
+];
+function timeColorOf(mtime) {
+  const ageDays = (Date.now() / 1000 - Number(mtime || 0)) / 86400;
+  for (const item of TIME_PALETTE) {
+    if (ageDays <= item.days) return item.color;
+  }
+  return '#64748b';
+}
 const toastEl = document.getElementById('toast');
 const chatLog = document.getElementById('chatLog');
 const chatInput = document.getElementById('chatInput');
@@ -78,6 +103,7 @@ let cleanBusy = false;
 let cleanResult = null;
 let orgAppliedId = '';
 let welcomed = false;
+let firstLoadDone = false;
 const FOV = 950;
 const stars = Array.from({length: 240}, () => ({
   x: Math.random(), y: Math.random(), r: Math.random() * 1.4 + .3,
@@ -275,6 +301,15 @@ async function loadGraph() {
   }
   if (!organizeWin.hidden) renderOrganizeFolderList();
   if (!cleanWin.hidden) renderCleanWindow();
+  // P1 生长动效：首次加载作为基线不播；之后新出现的文件节点 850ms 弹性生长
+  for (const node of graph.nodes) {
+    if (node.kind !== 'file') continue;
+    if (!settledNodes.has(node.id)) {
+      if (firstLoadDone) spawnAnim.set(node.id, performance.now());
+      settledNodes.add(node.id);
+    }
+  }
+  firstLoadDone = true;
   return true;
 }
 
@@ -526,6 +561,33 @@ function draw(dt) {
     : (clusterOf(node) === dimCluster ? 1 : 0.28);
   // 搜索淡出（2026-11-09）：脑图内搜索时非匹配节点压暗到 5%，对照 Obsidian graph 的搜索过滤
   const queryDimOf = node => (!mapQuery || matchesQuery(node)) ? 1 : 0.05;
+  // P1 局部视图：成员 = 自身 + 语义邻居 + 同目录文件；非成员压暗到 4%
+  const localViewMembers = new Set();
+  if (localViewId) {
+    localViewMembers.add(localViewId);
+    const rootNode = nodeById.get(localViewId);
+    const rootDir = rootNode && rootNode.path ? String(rootNode.path).replace(/\/[^/]*$/, '') : '';
+    for (const link of visibleLinks) {
+      if (link.kind !== 'semantic') continue;
+      if (link.source === localViewId) localViewMembers.add(link.target);
+      if (link.target === localViewId) localViewMembers.add(link.source);
+    }
+    if (rootDir) {
+      for (const node of visibleNodes) {
+        if (node.kind !== 'file' || !node.path) continue;
+        if (String(node.path).startsWith(rootDir + '/')) localViewMembers.add(node.id);
+      }
+    }
+  }
+  const localDimOf = node => (!localViewId || localViewMembers.has(node.id)) ? 1 : 0.04;
+  // P1 生长动效：新入库文件 850ms 弹性放大（easeOutBack 带回弹）
+  const spawnFactorOf = node => {
+    const start = spawnAnim.get(node.id);
+    if (start == null) return 1;
+    const t = (performance.now() - start) / 850;
+    if (t >= 1) { spawnAnim.delete(node.id); return 1; }
+    return Math.max(0.01, easeOutBack(Math.max(0, t)));
+  };
   // 标签分级预算（P1）：全景靠碰撞检测自然取舍，放大/聚焦后全量显示（文件名是主要识别信息，不再设上限）
   const labelBudget = Infinity;
   // 语义连线（2026-11-09）：细紫线，透明度随相似度权重；命中的连线照常高亮
@@ -588,9 +650,12 @@ function draw(dt) {
     const vis = visibilityFor(node);
     if (vis <= 0.02) continue;
     const fog = fogFor(p);
-    const alpha = vis * fog * dimFactorOf(node) * queryDimOf(node);
+    const spawnF = spawnFactorOf(node);
+    const alpha = vis * fog * dimFactorOf(node) * queryDimOf(node) * localDimOf(node)
+      * (node.kind === 'file' ? Math.min(1, spawnF) : 1);
     const minRadius = node.kind === 'file' ? 4.2 : 1.4;
-    const radius = Math.max(minRadius, (node.radius || 5) * p.scale);
+    const radius = Math.max(minRadius, (node.radius || 5) * p.scale) * (node.kind === 'file' ? spawnF : 1);
+    const nodeColor = (timeColorMode && node.kind === 'file') ? timeColorOf(node.mtime) : (node.color || '#b4c4da');
     const isDragged = nodeDrag && nodeDrag.node.id === node.id;
     const isFocus = (focus && node.id === focus.id) || isDragged;
     const isNeighbor = focus && neighbors.has(node.id);
@@ -605,7 +670,7 @@ function draw(dt) {
       ctx.fill();
     } else if (minimalMode) {
       // 极简模式（Obsidian graph 风）：纯点 + 分类色细环，无珠体/光晕
-      const dotColor = node.color || '#b4c4da';
+      const dotColor = nodeColor;
       ctx.beginPath();
       ctx.arc(p.x, p.y, Math.max(2, radius * .82), 0, Math.PI * 2);
       ctx.globalAlpha = alpha * .5;
@@ -616,7 +681,7 @@ function draw(dt) {
       ctx.lineWidth = .9;
       ctx.stroke();
     } else {
-      const sprite = beadSprite(node.color || '#b4c4da');
+      const sprite = beadSprite(nodeColor);
       const s = radius / BEAD_CORE * BEAD_SPRITE;
       ctx.globalAlpha = alpha;
       ctx.drawImage(sprite, p.x - s / 2, p.y - s / 2, s, s);
@@ -666,7 +731,8 @@ function draw(dt) {
     .map(item => ({
       node: item.node,
       p: item.p,
-      alpha: visibilityFor(item.node) * fogFor(item.p) * dimFactorOf(item.node) * queryDimOf(item.node),
+      alpha: visibilityFor(item.node) * fogFor(item.p) * dimFactorOf(item.node)
+        * queryDimOf(item.node) * localDimOf(item.node),
     }))
     .filter(item => item.alpha > 0.12)
     .sort((a, b) => {
@@ -1185,6 +1251,14 @@ function openDetail(node, event) {
   if (node.path) {
     const actions = document.createElement('div');
     actions.className = 'detail-actions';
+    if (node.kind === 'file') {
+      const localBtn = document.createElement('button');
+      localBtn.textContent = '局部视图';
+      localBtn.className = 'primary';
+      localBtn.title = '只看这个文件的语义邻居和同目录文件（Esc 退出）';
+      localBtn.addEventListener('click', () => setLocalView(node.id));
+      actions.appendChild(localBtn);
+    }
     const openBtn = document.createElement('button');
     openBtn.textContent = '打开所在目录';
     openBtn.addEventListener('click', () => revealPath(node.path));
@@ -1206,6 +1280,26 @@ function openDetail(node, event) {
     detailBody.appendChild(actions);
   }
   positionFloat(detailWin, event);
+}
+
+function setLocalView(id) {
+  const node = nodeById.get(id);
+  if (!node) return;
+  localViewId = id;
+  selected = node;
+  const clusterId = node.primary || (node.parent || null);
+  if (clusterId && clusterCenters.has(clusterId) && focusedCluster !== clusterId) {
+    enterCluster(clusterId);
+  }
+  detailWin.hidden = true;
+  hudEl.innerHTML = `局部视图：${escapeHtml(node.label)} 的关联文件<br>Esc 退出`;
+  needsDraw = true;
+}
+function clearLocalView() {
+  if (!localViewId) return;
+  localViewId = null;
+  updateStats();
+  needsDraw = true;
 }
 
 function showNodeByPath(path) {
@@ -2023,6 +2117,21 @@ if (minimalBtn) {
     needsDraw = true;
   });
 }
+const timeBtn = document.getElementById('timeBtn');
+function syncTimeBtn() {
+  if (!timeBtn) return;
+  timeBtn.classList.toggle('active', timeColorMode);
+  timeBtn.textContent = timeColorMode ? '分类色' : '时间着色';
+}
+if (timeBtn) {
+  syncTimeBtn();
+  timeBtn.addEventListener('click', () => {
+    timeColorMode = !timeColorMode;
+    try { localStorage.setItem('kb-timecolor', timeColorMode ? '1' : '0'); } catch (error) { /* 忽略 */ }
+    syncTimeBtn();
+    needsDraw = true;
+  });
+}
 document.getElementById('organizeBtn').addEventListener('click', () => {
   if (organizeWin.hidden) openOrganize();
   else organizeWin.hidden = true;
@@ -2336,4 +2445,89 @@ function renderLegend() {
   });
   input.addEventListener('blur', () => setTimeout(() => { drop.hidden = true; }, 150));
 })();
+
+/* ---- 命令面板（P1）：Ctrl/⌘+P，Obsidian 式键盘入口 ---- */
+const paletteWin = document.getElementById('palette');
+const paletteInput = document.getElementById('paletteInput');
+const paletteList = document.getElementById('paletteList');
+let paletteItems = [];
+
+function paletteCommands() {
+  const cmds = [];
+  if (localViewId) cmds.push({title: '退出局部视图', hint: '视图', run: clearLocalView});
+  if (selected && selected.kind === 'file') {
+    cmds.push({title: `局部视图：${selected.label}`, hint: '视图', run: () => setLocalView(selected.id)});
+  }
+  cmds.push(
+    {title: focusedCluster ? '返回全景' : '回到球心', hint: '视图', run: () => { exitCluster(); clearLocalView(); }},
+    {title: autoRotate ? '暂停旋转' : '继续旋转', hint: '视图', run: () => document.getElementById('rotateBtn').click()},
+    {title: minimalMode ? '关闭极简模式' : '极简模式', hint: '视图', run: () => minimalBtn && minimalBtn.click()},
+    {title: timeColorMode ? '恢复分类着色' : '按时间着色', hint: '视图', run: () => timeBtn && timeBtn.click()},
+    {title: '全屏切换', hint: '视图', run: toggleFullscreen},
+    {title: '更新索引', hint: '索引', run: refreshIndex},
+    {title: assistantPanel.hidden ? '打开助手' : '收起助手', hint: '面板', run: () => document.getElementById('assistantToggle').click()},
+    {title: '打开整理', hint: '面板', run: () => openOrganize()},
+    {title: '打开清理', hint: '面板', run: () => document.getElementById('cleanupBtn').click()},
+  );
+  for (const node of (graph ? graph.nodes : [])) {
+    if (node.tagKind === 'category') {
+      cmds.push({title: `聚焦分类：${node.label}`, hint: `分类 · ${fmt(node.count || 0)}`, run: () => enterCluster(node.id)});
+    }
+  }
+  return cmds;
+}
+function renderPalette(query) {
+  const q = String(query || '').trim().toLowerCase();
+  const all = paletteCommands();
+  paletteItems = (q ? all.filter(cmd => cmd.title.toLowerCase().includes(q) || cmd.hint.toLowerCase().includes(q)) : all).slice(0, 14);
+  paletteList.innerHTML = paletteItems.map((cmd, i) =>
+    `<div class="palette-item${i === 0 ? ' active' : ''}" data-i="${i}">` +
+    `<span>${escapeHtml(cmd.title)}</span><em>${escapeHtml(cmd.hint)}</em></div>`
+  ).join('') || '<div class="palette-empty">无匹配命令</div>';
+  for (const el of paletteList.querySelectorAll('.palette-item')) {
+    el.addEventListener('mousedown', event => { event.preventDefault(); runPalette(Number(el.dataset.i)); });
+  }
+}
+function openPalette() {
+  paletteWin.hidden = false;
+  paletteInput.value = '';
+  renderPalette('');
+  setTimeout(() => paletteInput.focus(), 30);
+}
+function closePalette() { paletteWin.hidden = true; }
+function runPalette(index) {
+  const cmd = paletteItems[index];
+  if (!cmd) return;
+  closePalette();
+  cmd.run();
+}
+paletteInput.addEventListener('input', () => renderPalette(paletteInput.value));
+paletteInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const active = paletteList.querySelector('.palette-item.active');
+    runPalette(active ? Number(active.dataset.i) : 0);
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const items = [...paletteList.querySelectorAll('.palette-item')];
+    if (!items.length) return;
+    let index = items.findIndex(el => el.classList.contains('active'));
+    index = event.key === 'ArrowDown' ? (index + 1) % items.length : (index - 1 + items.length) % items.length;
+    items.forEach(el => el.classList.remove('active'));
+    items[index].classList.add('active');
+    items[index].scrollIntoView({block: 'nearest'});
+  }
+});
+paletteInput.addEventListener('blur', () => setTimeout(closePalette, 120));
+document.getElementById('paletteBtn').addEventListener('click', openPalette);
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    paletteWin.hidden ? openPalette() : closePalette();
+    return;
+  }
+  if (event.key !== 'Escape') return;
+  if (!paletteWin.hidden) { closePalette(); return; }
+  if (localViewId) { clearLocalView(); }
+});
 requestAnimationFrame(frame);
