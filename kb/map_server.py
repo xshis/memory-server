@@ -103,6 +103,65 @@ def status_label(status: str) -> Tuple[str, str]:
     return "status:仅文件名", "仅文件名"
 
 
+def _semantic_edges(db_path: Path, selected_rows: List[Dict[str, Any]],
+                    cosine_threshold: float = 0.8, max_per_node: int = 2) -> List[Dict[str, Any]]:
+    """展示中的文件两两计算 int8 向量余弦，超过阈值的连边。返回前端 links 列表。
+
+    向量是单位化后的 int8（quantize_vector），cosine = 点积 / (127*127)。
+    """
+    import numpy as np
+
+    fid_to_node = {}
+    ids = []
+    for index, row in enumerate(selected_rows):
+        fid = row.get("id")
+        if fid is None:
+            continue
+        fid_to_node[int(fid)] = f"file:{index}"
+        ids.append(int(fid))
+    if len(ids) < 8:
+        return []
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT file_id, data FROM file_embeddings WHERE file_id IN ({marks})", ids
+        ).fetchall()
+    finally:
+        conn.close()
+    if len(rows) < 8:
+        return []
+    dim = len(rows[0]["data"])
+    matrix = np.empty((len(rows), dim), dtype=np.int16)
+    for i, row in enumerate(rows):
+        matrix[i] = np.frombuffer(row["data"], dtype=np.int8)
+    # int16 直接相乘会溢出（单点积最大 512×127²≈8.3M > 32767），必须升到 int32 再乘
+    dot = matrix.astype(np.int32) @ matrix.astype(np.int32).T
+    np.fill_diagonal(dot, -(1 << 20))
+    limit = int(cosine_threshold * 127 * 127)
+    k = min(max_per_node, len(rows) - 1)
+    top = np.argpartition(dot, -k, axis=1)[:, -k:]
+    edges: Dict[Tuple[int, int], Tuple[str, str, float]] = {}
+    for a in range(len(rows)):
+        for b in top[a]:
+            score = int(dot[a, b])
+            if score < limit:
+                continue
+            key = (a, int(b)) if a < int(b) else (int(b), a)
+            if key in edges:
+                continue
+            fa, fb = int(rows[a]["file_id"]), int(rows[b]["file_id"])
+            na, nb = fid_to_node.get(fa), fid_to_node.get(fb)
+            if not na or not nb:
+                continue
+            edges[key] = (na, nb, round(score / (127.0 * 127.0), 3))
+    return [
+        {"source": na, "target": nb, "kind": "semantic", "weight": w}
+        for (na, nb, w) in edges.values()
+    ]
+
+
 def build_graph(db_path: Path, *, max_files: int = 500,
                 row_sink: Optional[List[Dict[str, Any]]] = None,
                 progress: Optional[Callable[[int, str], None]] = None) -> Dict[str, Any]:
@@ -128,7 +187,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
             """
         ).fetchone()
         rows = [dict(row) for row in conn.execute(
-            "SELECT rel_path, name, ext, size, mtime, content_status, sha256 FROM files"
+            "SELECT id, rel_path, name, ext, size, mtime, content_status, sha256 FROM files"
         )]
         try:
             roots = [dict(row) for row in conn.execute("SELECT path FROM roots")]
@@ -497,6 +556,12 @@ def build_graph(db_path: Path, *, max_files: int = 500,
         # 融合球体（2026-11-05）：不画任何节点间连线，文件与标签的关联只保留在字段里
 
     emit(88, "生成星点")
+    # 语义连线（2026-11-09）：展示中的文件按向量余弦两两连边（阈值 0.80、每点最多 2 条），
+    # 知识"簇"肉眼可见；无 numpy/无向量时静默跳过，不影响基础图
+    try:
+        links.extend(_semantic_edges(db_path, selected))
+    except Exception:  # noqa: BLE001
+        pass
     summary = {
         "files": int(summary_row["files"] or 0),        "bytes": int(summary_row["bytes"] or 0),
         "bytes_text": human_size(int(summary_row["bytes"] or 0)),
@@ -574,6 +639,11 @@ class GraphState:
         self.index_proc: Optional[subprocess.Popen] = None
         self.last_error = ""
         self.search_rows: Optional[List[Dict[str, Any]]] = None
+        # 全库向量缓存（档案卡"相似文件"用）：(数量, 最大id) 变化时重建
+        self._embed_index: Optional[Tuple[int, int]] = None
+        self._embed_ids: List[int] = []
+        self._embed_paths: List[str] = []
+        self._embed_matrix: Any = None
         self._rebuilding = False
         self._rebuild_pending = False
         self.build_lock = threading.Lock()
@@ -703,6 +773,106 @@ class GraphState:
             "services": len(services.get("alive") or []) + (1 if services.get("map_alive") else 0),
             "warnings": warnings,
         }
+
+    def _embed_index_matrix(self) -> None:
+        """懒加载全库 int8 向量（int16 矩阵）+ file_id/path 列表，带失效签名。"""
+        import numpy as np
+
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            stat = conn.execute(
+                "SELECT COUNT(*) AS c, COALESCE(MAX(file_id),0) AS m FROM file_embeddings"
+            ).fetchone()
+            signature = (int(stat["c"] or 0), int(stat["m"] or 0))
+            if self._embed_index == signature and self._embed_matrix is not None:
+                return
+            rows = conn.execute(
+                """
+                SELECT e.file_id AS fid, f.rel_path AS path, e.data AS data
+                FROM file_embeddings e JOIN files f ON f.id = e.file_id
+                ORDER BY e.file_id
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        dim = len(rows[0]["data"]) if rows else 0
+        matrix = np.empty((len(rows), dim), dtype=np.int16) if rows else np.empty((0, 0), dtype=np.int16)
+        ids: List[int] = []
+        paths: List[str] = []
+        for i, row in enumerate(rows):
+            ids.append(int(row["fid"]))
+            paths.append(str(row["path"]))
+            matrix[i] = np.frombuffer(row["data"], dtype=np.int8)
+        self._embed_ids = ids
+        self._embed_paths = paths
+        self._embed_matrix = matrix
+        self._embed_index = signature
+
+    def file_info(self, path: str) -> Dict[str, Any]:
+        """档案卡：文件元数据 + 正文预览 + 语义相似文件 top5。"""
+        import numpy as np
+
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT id, rel_path, name, ext, size, mtime, content_status, content FROM files WHERE rel_path = ?",
+                (path,),
+            ).fetchone()
+            if row is None:
+                return {"error": "文件不在索引里"}
+            fid = int(row["id"])
+            vector = conn.execute(
+                "SELECT data FROM file_embeddings WHERE file_id = ?", (fid,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        def mtime_text(value: float) -> str:
+            if not value:
+                return ""
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(value)))
+
+        preview = str(row["content"] or "")[:600]
+        info: Dict[str, Any] = {
+            "name": str(row["name"] or ""),
+            "path": str(row["rel_path"] or ""),
+            "ext": str(row["ext"] or ""),
+            "size": int(row["size"] or 0),
+            "size_text": human_size(int(row["size"] or 0)),
+            "mtime": float(row["mtime"] or 0),
+            "mtime_text": mtime_text(float(row["mtime"] or 0)),
+            "status": str(row["content_status"] or ""),
+            "preview": preview,
+            "similar": [],
+        }
+        if vector is not None and len(vector["data"]) > 0:
+            try:
+                self._embed_index_matrix()
+                ids = self._embed_ids
+                if fid in ids:
+                    # q 升到 int32 触发类型提升，避免 int16 点积溢出
+                    q = np.frombuffer(vector["data"], dtype=np.int8).astype(np.int32)
+                    scores = self._embed_matrix @ q
+                    order = np.argsort(-scores)[:8]
+                    for idx in order:
+                        other_id = ids[int(idx)]
+                        if other_id == fid:
+                            continue
+                        score = round(int(scores[int(idx)]) / (127.0 * 127.0), 3)
+                        if score < 0.55:
+                            continue
+                        info["similar"].append({
+                            "path": self._embed_paths[int(idx)],
+                            "name": Path(self._embed_paths[int(idx)]).name,
+                            "score": score,
+                        })
+                        if len(info["similar"]) >= 5:
+                            break
+            except Exception:  # noqa: BLE001
+                pass
+        return info
 
     def _running_index_pid(self) -> Optional[int]:
         try:
@@ -1200,6 +1370,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(b"web/index.html missing", 404, "text/plain; charset=utf-8")
                 return
             self._send(page.read_bytes(), 200, "text/html; charset=utf-8")
+            return
+        if parsed.path.startswith(("/css/", "/js/")):
+            target = (self.web_dir / parsed.path.lstrip("/")).resolve()
+            web_root = self.web_dir.resolve()
+            if str(target).startswith(str(web_root)) and target.is_file():
+                ctype = ("text/css; charset=utf-8" if target.suffix == ".css"
+                         else "application/javascript; charset=utf-8")
+                self._send(target.read_bytes(), 200, ctype)
+            else:
+                self._send(b"not found", 404, "text/plain; charset=utf-8")
+            return
+        if parsed.path == "/api/file_info":
+            path = (params.get("path") or [""])[0].strip()
+            if not path:
+                self._json({"error": "缺少 path 参数"}, 400)
+                return
+            try:
+                self._json(self.state.file_info(path))
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": str(exc)}, 500)
             return
         if parsed.path == "/api/graph":
             try:

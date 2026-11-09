@@ -33,4 +33,4 @@ kb = "kb.cli:main"
 include = ["kb*"]
 
 [tool.setuptools.package-data]
-kb = ["map_web/*.html"]
+kb = ["map_web/*.html", "map_web/css/*.css", "map_web/js/*.js"]
