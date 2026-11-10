@@ -75,7 +75,8 @@ def run_tray(check: bool = False) -> int:
         return 0 if tray_available() else 1
 
     if sys.platform != "darwin":
-        print("菜单栏托盘目前只支持 macOS。Windows 请使用 start.bat。")
+        print("菜单栏托盘是 macOS 功能；Windows 请双击 一键启动.bat（或运行 start.bat）。")
+        print("启动后网页控制台：http://127.0.0.1:8770/")
         return 1
     if not tray_available():
         print("缺少 rumps。安装：.venv/bin/python -m pip install -e '.[tray]'")
