@@ -182,7 +182,7 @@ Write-Host "安装基础依赖 ..."
 & $py -m pip install --upgrade pip
 $baseOk = $false
 if ($useWheels) {
-    Write-Host "使用包内依赖包安装（离线，版本锁定）..."
+    Write-Host "使用包内依赖包安装 ..."
     & $py -m pip install @offline setuptools wheel
     & $py -m pip install @offline --no-build-isolation -e .
     if ($LASTEXITCODE -eq 0) { $baseOk = $true }
@@ -284,7 +284,7 @@ if ($ollamaChoice -eq "1") {
 }
 
 Write-Host ""
-Write-Host "运行环境自检 ..."
+Write-Host "环境自检 ..."
 & $py -m kb doctor
 
 Write-Host ""

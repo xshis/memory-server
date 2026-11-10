@@ -150,7 +150,7 @@ else
 fi
 
 echo
-echo "运行环境自检 ..."
+echo "环境自检 ..."
 "$PY" -m kb doctor || true
 
 echo
