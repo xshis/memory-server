@@ -154,6 +154,7 @@ if (-not (Test-Path $py)) {
     Write-Host "虚拟环境创建失败：$py 不存在"
     exit 1
 }
+Write-Host "  venv Python：$(& $py --version 2>&1)"
 
 $pipCheck = & $py -m pip --version 2>$null
 if ($LASTEXITCODE -ne 0) {
@@ -185,9 +186,12 @@ if (-not $baseOk) {
 if ($env:KB_WITH_EMBED -ne "0") {
     Write-Host "安装语义检索依赖 fastembed ..."
     $embedLog = Join-Path $PSScriptRoot "logs\pip-embed.log"
+    "=== python: $(& $py --version 2>&1) ===" | Out-File -FilePath $embedLog -Encoding utf8
+    "=== pip: $(& $py -m pip --version 2>&1) ===" | Out-File -FilePath $embedLog -Encoding utf8 -Append
+    "=== installed (相关): $(& $py -m pip list 2>&1 | Select-String -Pattern 'numpy|onnx|pillow|token|httpx|protobuf|hugging|loguru|mmh3|tqdm|requests' | Out-String) ===" | Out-File -FilePath $embedLog -Encoding utf8 -Append
     $embedOk = $false
     if ($useWheels) {
-        & $py -m pip install --no-index --find-links wheels "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog
+        & $py -m pip install --no-index --find-links wheels "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog -Append
         if ($LASTEXITCODE -eq 0) { $embedOk = $true }
     }
     if (-not $embedOk) {
