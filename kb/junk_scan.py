@@ -18,19 +18,25 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .map_server import human_size, is_cache_dir, move_to_trash
 
 # ---- 通用规则阈值（可按需调整，全部独立于具体机器）----
-JUNK_OS_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
-TEMP_STALE_DAYS = 1          # .tmp/.temp/.part/.crdownload/.download 超过 1 天算废弃
+# 系统保护对象：任何情况下跳过，既不报告也不允许删除（Windows 系统文件/回收站等）
+NEVER_TOUCH_DIR_NAMES = {"$recycle.bin", "system volume information", "config.msi"}
+NEVER_TOUCH_FILE_NAMES = {"pagefile.sys", "hiberfil.sys", "swapfile.sys"}
+
+# 各系统垃圾文件名（小写比较）：macOS .DS_Store；Windows Thumbs.db/desktop.ini；Office ~$ 锁
+JUNK_OS_NAMES = {".ds_store", "thumbs.db", "ehthumbs.db", "desktop.ini"}
+TEMP_STALE_DAYS = 1          # .tmp/.temp/.part/.crdownload/.download/.partial/.crswap 超 1 天算废弃
 EMPTY_STALE_DAYS = 7         # 0 字节文件超过 7 天（避开占位锁文件）
 LOG_STALE_DAYS = 30          # 日志超过 30 天
 LOG_MIN_BYTES = 10 * 1024 * 1024
 CACHE_STALE_DAYS = 30        # 缓存目录里超过 30 天未动的文件
 CACHE_MIN_BYTES = 50 * 1024 * 1024
+BACKUP_STALE_DAYS = 30       # .bak/.old 备份超 30 天
 MAX_HASH_BYTES = 2 * 1024 * 1024 * 1024   # 大于 2GB 不做重复哈希
 DEFAULT_MAX_FILES = 200_000               # 扫描文件数上限，超出截断并提示
 ITEMS_PER_CATEGORY = 50                   # 每类最多展示多少条
 
 # 允许移入废纸篓的类别（白名单）；stale_cache 只建议移出索引，故意不在其中
-TRASHABLE = {"temp", "empty", "old_log", "duplicate"}
+TRASHABLE = {"temp", "empty", "old_log", "duplicate", "backup"}
 
 
 def default_roots() -> List[Path]:
@@ -74,13 +80,15 @@ def _classify(path: Path, size: int, mtime: float, now: float) -> Optional[Tuple
     """按通用规则给一个文件分类；返回 (类别, 原因) 或 None。"""
     name = path.name.lower()
     age = _age_days(mtime, now)
-    if name in JUNK_OS_NAMES or name.startswith("~$"):
-        return "temp", "系统垃圾文件"
+    if name in JUNK_OS_NAMES or name.startswith(("~$", ".~lock")):
+        # ~$*：Office 锁文件；.~lock*#：LibreOffice/WPS 锁文件
+        return "temp", "系统/办公软件垃圾文件"
     if name.endswith((".tmp", ".temp")):
         if age >= TEMP_STALE_DAYS:
             return "temp", f"遗留临时文件（{int(age)} 天未动）"
         return None
-    if name.endswith((".part", ".crdownload", ".download")):
+    if name.endswith((".part", ".crdownload", ".download", ".partial", ".crswap")):
+        # .part(FDM/eMule) .crdownload(Chrome) .partial/.crswap(Edge/IE) 下载临时文件
         if age >= TEMP_STALE_DAYS:
             return "temp", f"废弃的下载临时文件（{int(age)} 天未动）"
         return None
@@ -90,6 +98,8 @@ def _classify(path: Path, size: int, mtime: float, now: float) -> Optional[Tuple
         return None
     if path.suffix.lower() == ".log" and age >= LOG_STALE_DAYS and size >= LOG_MIN_BYTES:
         return "old_log", f"陈旧日志（{int(age)} 天，{human_size(size)}）"
+    if path.suffix.lower() in {".bak", ".old"} and age >= BACKUP_STALE_DAYS:
+        return "backup", f"陈旧备份文件（{int(age)} 天）"
     if age >= CACHE_STALE_DAYS and size >= CACHE_MIN_BYTES and _in_cache_dir(path):
         return "stale_cache", f"缓存目录内 {int(age)} 天未动的大文件"
     return None
@@ -111,10 +121,17 @@ def _iter_files(roots: Iterable[Path], max_files: int) -> Tuple[List[Tuple[Path,
     files: List[Tuple[Path, os.stat_result]] = []
     truncated = False
     for root in roots:
-        for current, _dirnames, filenames in os.walk(root, followlinks=False, onerror=lambda _e: None):
+        for current, dirnames, filenames in os.walk(root, followlinks=False, onerror=lambda _e: None):
+            # 系统保护目录直接剪枝（Windows 回收站/卷信息/安装回滚目录）
+            dirnames[:] = [
+                name for name in dirnames
+                if name.lower() not in NEVER_TOUCH_DIR_NAMES
+            ]
             for filename in filenames:
                 if len(files) >= max_files:
                     return files, True
+                if filename.lower() in NEVER_TOUCH_FILE_NAMES:
+                    continue
                 candidate = Path(current) / filename
                 try:
                     if candidate.is_symlink():

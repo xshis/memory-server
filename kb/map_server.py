@@ -65,6 +65,7 @@ CACHE_DIR_PATTERNS = [
     re.compile(r"^(wechat files|wxwork|wework)", re.I),
     re.compile(r"^(qq|tim|nt_qq)", re.I),
     re.compile(r"^(feishu|lark|dingtalk|alipay|baidunetdisk|wps)[-_ ]?cache", re.I),
+    re.compile(r"crashpad$", re.I),            # Chrome/Electron 崩溃缓存（Windows 常见）
     re.compile(r"cache[s]?$", re.I),
     re.compile(r"^(tmp|temp|logs?)$", re.I),
 ]

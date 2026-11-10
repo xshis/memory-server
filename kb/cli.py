@@ -575,7 +575,7 @@ def cmd_scan_junk(args: argparse.Namespace) -> int:
         return 0
     labels = {
         "temp": "临时文件", "empty": "空文件", "old_log": "陈旧日志",
-        "duplicate": "重复文件", "stale_cache": "缓存目录大文件",
+        "duplicate": "重复文件", "stale_cache": "缓存目录大文件", "backup": "陈旧备份",
     }
     print(f"扫描根目录：{'、'.join(report['scanned_roots'])}")
     print(f"共扫描 {report['scanned_files']} 个文件；可清理 {report['total']['count']} 项 / {report['total']['bytes_text']}"
