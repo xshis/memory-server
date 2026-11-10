@@ -245,6 +245,14 @@ if ($env:KB_WITH_FEISHU -eq "1") {
     if (-not $ok) { Write-Host "  [警告] 飞书依赖安装失败，机器人不可用。" }
 }
 
+if ($env:KB_WITH_TRAY -ne "0") {
+    Write-Host "安装系统托盘依赖 ..."
+    $ok = $false
+    if ($useWheels) { & $py -m pip install @offline -e ".[tray]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { & $py -m pip install -e ".[tray]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { Write-Host "  [警告] 托盘依赖安装失败，系统托盘不可用（start.bat 仍可启动服务）。" }
+}
+
 Write-Host ""
 Write-Host "本地模型（可选，不装也能正常搜索）"
 Write-Host "  1) qwen2.5:3b   推荐，约 1.9GB，速度和质量平衡"

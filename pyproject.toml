@@ -16,7 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 embed = ["fastembed>=0.2.7"]
 feishu = ["lark-oapi>=1.7.0"]
-tray = ["rumps>=0.4; sys_platform == 'darwin'"]
+tray = [
+  "rumps>=0.4; sys_platform == 'darwin'",
+  "pystray>=0.19; sys_platform == 'win32'",
+]
 vision = ["opencv-python-headless>=4.8"]
 docs = [
   "pypdf>=4.0",

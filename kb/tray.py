@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import shlex
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from . import config as app_config
 from . import setup_wizard
 
 APP_NAME = "personal-kb"
+TRAY_LOCK_PORT = 8771  # Windows 托盘单实例锁：端口被占用即已有托盘在运行
 
 
 def tray_pid_path() -> Path:
@@ -60,6 +63,7 @@ def _trace(message: str) -> None:
 
 
 def tray_available() -> bool:
+    """macOS 菜单栏依赖。"""
     try:
         import rumps  # noqa: F401
         return True
@@ -67,17 +71,41 @@ def tray_available() -> bool:
         return False
 
 
+def _pystray_available() -> bool:
+    """Windows 系统托盘依赖。"""
+    try:
+        import pystray  # noqa: F401
+        from PIL import Image  # noqa: F401
+
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def run_tray(check: bool = False) -> int:
     if check:
-        status = setup_wizard.service_status()
-        print(f"托盘依赖 rumps：{'可用' if tray_available() else '未安装'}")
-        print(f"服务：{status}")
-        return 0 if tray_available() else 1
+        if sys.platform == "darwin":
+            ok = tray_available()
+            print(f"托盘依赖 rumps：{'可用' if ok else '未安装'}")
+        elif sys.platform == "win32":
+            ok = _pystray_available()
+            print(f"托盘依赖 pystray：{'可用' if ok else '未安装'}")
+        else:
+            ok = False
+            print("托盘只支持 macOS 和 Windows")
+        print(f"服务：{setup_wizard.service_status()}")
+        return 0 if ok else 1
 
-    if sys.platform != "darwin":
-        print("菜单栏托盘是 macOS 功能；Windows 请双击 一键启动.bat（或运行 start.bat）。")
-        print("启动后网页控制台：http://127.0.0.1:8770/")
-        return 1
+    if sys.platform == "darwin":
+        return _run_mac_tray()
+    if sys.platform == "win32":
+        return _run_windows_tray()
+    print("托盘只支持 macOS 和 Windows。")
+    return 1
+
+
+# ---------------------------------------------------------------- macOS 菜单栏
+def _run_mac_tray() -> int:
     if not tray_available():
         print("缺少 rumps。安装：.venv/bin/python -m pip install -e '.[tray]'")
         return 1
@@ -305,4 +333,201 @@ def run_tray(check: bool = False) -> int:
         KBTray().run()
     finally:
         _clear_pid()
+    return 0
+
+
+# ---------------------------------------------------------------- Windows 系统托盘
+def _windows_make_image(color: str) -> Any:
+    from PIL import Image, ImageDraw, ImageFont
+
+    size = 64
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((4, 4, size - 4, size - 4), fill=color)
+    try:
+        font = ImageFont.truetype("arial.ttf", 24)
+    except OSError:
+        font = ImageFont.load_default()
+    try:
+        draw.text((16, 18), "KB", fill="white", font=font)
+    except OSError:
+        pass
+    return image
+
+
+def _windows_open_url(url: str) -> None:
+    if hasattr(os, "startfile"):
+        os.startfile(url)  # type: ignore[attr-defined]
+    else:  # pragma: no cover - 仅非 Windows 测试环境
+        subprocess.run(["cmd", "/c", "start", "", url], check=False)
+
+
+def _windows_open_path(path: Path) -> None:
+    if hasattr(os, "startfile"):
+        os.startfile(str(path))  # type: ignore[attr-defined]
+    else:  # pragma: no cover
+        subprocess.run(["cmd", "/c", "start", "", str(path)], check=False)
+
+
+def _windows_copy(text: str) -> None:
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        pass
+
+
+def _windows_detached(args: list[str]) -> None:
+    subprocess.Popen(
+        args,
+        cwd=str(app_config.HOME),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+    )
+
+
+def _windows_service_running() -> bool:
+    try:
+        return bool(setup_wizard.service_status()["running"])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_windows_tray() -> int:
+    if not _pystray_available():
+        print("缺少托盘依赖。安装：.venv\\Scripts\\python -m pip install pystray pillow")
+        return 1
+
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        lock.bind(("127.0.0.1", TRAY_LOCK_PORT))
+        lock.listen(1)
+    except OSError:
+        print("系统托盘已经在运行。")
+        try:
+            lock.close()
+        except OSError:
+            pass
+        return 0
+
+    import pystray
+
+    holder: dict[str, Any] = {"running": _windows_service_running()}
+
+    def current_title() -> str:
+        return f"{APP_NAME} · {'运行中' if holder['running'] else '已停止'}"
+
+    def refresh(icon: Any) -> None:
+        while True:
+            time.sleep(5)
+            running = _windows_service_running()
+            if running != holder["running"]:
+                holder["running"] = running
+                try:
+                    icon.icon = _windows_make_image("#2f9e44" if running else "#adb5bd")
+                    icon.title = current_title()
+                    icon.update_menu()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def open_map(icon: Any, item: Any) -> None:
+        _trace("点击：打开 3D 脑图")
+        from . import runtime
+
+        port = 8770
+        if not runtime.port_in_use("127.0.0.1", port):
+            _windows_detached([sys.executable, "-m", "kb", "map", "--port", str(port)])
+            time.sleep(1.5)
+        _windows_open_url(f"http://127.0.0.1:{port}/")
+
+    def copy_mcp(icon: Any, item: Any) -> None:
+        _trace("点击：复制 MCP 地址")
+        port = int(app_config.load_config()["mcp"].get("port", 8766))
+        _windows_copy(f"http://127.0.0.1:{port}/mcp")
+
+    def reindex(icon: Any, item: Any) -> None:
+        _trace("点击：重新索引")
+        _windows_detached([sys.executable, "-m", "kb", "index", "--quiet"])
+
+    def open_log(icon: Any, item: Any) -> None:
+        name = getattr(item, "text", "")
+        _trace(f"点击：日志-{name}")
+        path = app_config.logs_dir() / f"{name}.log"
+        if path.exists():
+            _windows_open_path(path)
+
+    def open_project(icon: Any, item: Any) -> None:
+        _trace("点击：打开项目目录")
+        _windows_open_path(app_config.HOME)
+
+    def start(icon: Any, item: Any) -> None:
+        _trace("点击：启动服务")
+        if _windows_service_running():
+            return
+        setup_wizard.start_services()
+        holder["running"] = _windows_service_running()
+        icon.update_menu()
+
+    def stop(icon: Any, item: Any) -> None:
+        _trace("点击：停止服务")
+        _windows_detached([sys.executable, "-m", "kb", "stop"])
+        holder["running"] = False
+        icon.update_menu()
+
+    def quit_app(icon: Any, item: Any) -> None:
+        _trace("点击：退出")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "kb", "stop"],
+                cwd=str(app_config.HOME),
+                capture_output=True,
+                timeout=30,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem(lambda item: "运行中" if holder["running"] else "已停止", None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("打开 3D 脑图", open_map, default=True),
+        pystray.MenuItem("复制 MCP 地址", copy_mcp),
+        pystray.MenuItem("重新索引", reindex),
+        pystray.MenuItem(
+            "查看日志",
+            pystray.Menu(
+                *(pystray.MenuItem(name, open_log) for name in ("map", "mcp", "watch", "feishu", "tray"))
+            ),
+        ),
+        pystray.MenuItem("打开项目目录", open_project),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("启动服务", start),
+        pystray.MenuItem("停止服务", stop),
+        pystray.MenuItem("退出（停止服务）", quit_app),
+    )
+
+    icon = pystray.Icon(
+        "personal-kb",
+        _windows_make_image("#2f9e44" if holder["running"] else "#adb5bd"),
+        current_title(),
+        menu,
+    )
+
+    def on_setup(icon_obj: Any) -> None:
+        _trace("系统托盘启动")
+        threading.Thread(target=refresh, args=(icon_obj,), daemon=True).start()
+
+    _write_pid()
+    try:
+        icon.run(setup=on_setup)
+    finally:
+        _clear_pid()
+        try:
+            lock.close()
+        except OSError:
+            pass
     return 0

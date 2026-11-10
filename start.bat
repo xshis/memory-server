@@ -5,5 +5,6 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
+start "" /b ".venv\Scripts\python.exe" -m kb tray
 .venv\Scripts\python.exe -m kb start %*
 pause

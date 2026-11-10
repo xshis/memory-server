@@ -37,12 +37,15 @@ REQUIREMENTS = [
     "setuptools>=68",
     "wheel",
 ]
+# 纯 Python wheel，但带了 sys_platform == "darwin" 的平台标记依赖（pyobjc），
+# 交叉下载器无法解析，单独 --no-deps 拉取；Windows 端实际只依赖 Pillow（在主闭包里）。
+EXTRA_WHEELS = ["pystray>=0.19"]
 
 # 顶层依赖的规范化名，用于完整性校验
 TOP_LEVEL = {
     "mcp", "numpy", "watchdog", "fastembed", "pypdf", "python-docx",
     "openpyxl", "python-pptx", "opencv-python-headless", "lark-oapi",
-    "setuptools", "wheel",
+    "pystray", "setuptools", "wheel",
 }
 
 
@@ -96,8 +99,13 @@ def main() -> int:
         "--implementation", "cp",
         *REQUIREMENTS,
     ]
-    print("下载 Windows wheel（基础+语义+文档+图片+飞书）...")
+    print("下载 Windows wheel（基础+语义+文档+图片+飞书+托盘）...")
     subprocess.run(cmd, check=True)
+    for requirement in EXTRA_WHEELS:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "download", "--no-deps", "-d", str(WHEELS), requirement],
+            check=True,
+        )
     pins = build_constraints()
     verify_offline()
     files = sorted(WHEELS.glob("*.whl"))
