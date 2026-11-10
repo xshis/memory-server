@@ -48,6 +48,17 @@ def _clear_pid() -> None:
         pass
 
 
+def _trace(message: str) -> None:
+    """把托盘动作写入 logs/tray.log，便于排查点击无响应。"""
+    try:
+        path = app_config.logs_dir() / "tray.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [tray] {message}\n")
+    except OSError:
+        pass
+
+
 def tray_available() -> bool:
     try:
         import rumps  # noqa: F401
@@ -84,29 +95,38 @@ def run_tray(check: bool = False) -> int:
             self.stop_proc: subprocess.Popen | None = None
             self.status_item = rumps.MenuItem("状态：检查中…")
             self.log_menu = rumps.MenuItem("查看日志")
-            self.log_menu.menu = [
-                rumps.MenuItem(name, callback=self.open_log)
-                for name in ("map", "mcp", "watch", "feishu", "tray")
-            ]
+            for name in ("map", "mcp", "watch", "feishu", "tray"):
+                self.log_menu.add(rumps.MenuItem(name, callback=self._cb("日志-" + name, self.open_log)))
             self._setup_menu()
             self.timer = rumps.Timer(self.refresh, 3)
             self.timer.start()
             self.refresh(None)
+            _trace("菜单栏启动")
+
+        def _cb(self, name: str, method: Any) -> Any:
+            """包装回调：先写日志再执行，出错也留痕。"""
+            def run(sender: Any) -> None:
+                _trace(f"点击：{name}")
+                try:
+                    method(sender)
+                except Exception as exc:  # noqa: BLE001
+                    _trace(f"出错：{name}：{type(exc).__name__}: {exc}")
+            return run
 
         def _menu_items(self) -> list[Any]:
             return [
                 self.status_item,
                 None,
-                rumps.MenuItem("打开 3D 脑图", callback=self.open_map),
-                rumps.MenuItem("复制 MCP 地址", callback=self.copy_mcp),
-                rumps.MenuItem("环境与接入检查…", callback=self.open_setup),
-                rumps.MenuItem("重新索引", callback=self.reindex),
+                rumps.MenuItem("打开 3D 脑图", callback=self._cb("打开 3D 脑图", self.open_map)),
+                rumps.MenuItem("复制 MCP 地址", callback=self._cb("复制 MCP 地址", self.copy_mcp)),
+                rumps.MenuItem("环境与接入检查…", callback=self._cb("环境与接入检查", self.open_setup)),
+                rumps.MenuItem("重新索引", callback=self._cb("重新索引", self.reindex)),
                 self.log_menu,
-                rumps.MenuItem("打开项目目录", callback=self.open_project),
+                rumps.MenuItem("打开项目目录", callback=self._cb("打开项目目录", self.open_project)),
                 None,
-                rumps.MenuItem("启动服务", callback=self.start),
-                rumps.MenuItem("停止服务", callback=self.stop),
-                rumps.MenuItem("退出（停止服务）", callback=self.quit),
+                rumps.MenuItem("启动服务", callback=self._cb("启动服务", self.start)),
+                rumps.MenuItem("停止服务", callback=self._cb("停止服务", self.stop)),
+                rumps.MenuItem("退出（停止服务）", callback=self._cb("退出", self.quit)),
             ]
 
         def _setup_menu(self) -> None:
@@ -124,32 +144,30 @@ def run_tray(check: bool = False) -> int:
             self._enable_menu()
 
         def _enable_menu(self) -> None:
-            def enable(item: Any) -> None:
-                if item is None:
+            def walk(container: Any) -> None:
+                try:
+                    values = list(container.values())
+                except Exception:  # noqa: BLE001
                     return
-                native = getattr(item, "_menuitem", None)
-                if native is not None:
-                    try:
-                        native.setEnabled_(True)
-                    except Exception:  # noqa: BLE001
-                        pass
-                submenu = getattr(item, "menu", None)
-                if submenu:
-                    try:
-                        children = list(submenu.values())
-                    except Exception:  # noqa: BLE001
-                        children = []
-                    for child in children:
-                        enable(child)
+                for item in values:
+                    native = getattr(item, "_menuitem", None)
+                    if native is not None:
+                        try:
+                            native.setEnabled_(True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if hasattr(item, "values"):
+                        walk(item)
 
-            try:
-                items = list(self.menu.values())
-            except Exception:  # noqa: BLE001
-                items = []
-            for item in items:
-                enable(item)
+            walk(self.menu)
 
         def refresh(self, _sender: Any) -> None:
+            try:
+                self._refresh()
+            except Exception as exc:  # noqa: BLE001
+                _trace(f"刷新出错：{type(exc).__name__}: {exc}")
+
+        def _refresh(self) -> None:
             if self.stop_proc is not None:
                 code = self.stop_proc.poll()
                 if code is None:
