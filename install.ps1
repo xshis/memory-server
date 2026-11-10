@@ -11,7 +11,8 @@ function Test-PythonExe {
     param([string]$Exe, [string[]]$PrefixArgs = @())
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $Exe @PrefixArgs -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null | Out-Null
+    # 只接受 3.10 ~ 3.12：fastembed/onnxruntime 在 3.13+ 上经常没有可用 wheel（3.15 必炸）
+    & $Exe @PrefixArgs -c "import sys; v=sys.version_info; raise SystemExit(0 if (3,10) <= (v[0],v[1]) < (3,13) else 1)" 2>$null | Out-Null
     $ok = ($LASTEXITCODE -eq 0)
     $ErrorActionPreference = $prev
     return $ok
@@ -21,8 +22,8 @@ function Find-Python {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $found = $null
-    # 1) PATH 里的 py 启动器 / python（跳过微软商店占位别名）；3.12 优先（fastembed 等二进制依赖对新版本支持稳）
-    foreach ($candidate in @("py -3.12", "py -3.11", "py -3.10", "py -3.13", "python")) {
+    # 1) PATH 里的 py 启动器 / python（跳过微软商店占位别名）；只认 3.10~3.12，3.12 优先
+    foreach ($candidate in @("py -3.12", "py -3.11", "py -3.10", "python")) {
         $parts = $candidate.Split(" ")
         $exe = $parts[0]
         $prefix = @()
@@ -108,7 +109,8 @@ if (-not $python) {
     }
 }
 if (-not $python) {
-    Write-Host "未找到 Python 3.10+。请安装 Python 3.12：https://www.python.org/downloads/"
+    Write-Host "未找到可用的 Python 3.10~3.12。请安装 Python 3.12：https://www.python.org/downloads/"
+    Write-Host "（机器上如果装了 3.13 或更新版本，fastembed 等组件暂无对应依赖包，请另装 3.12）"
     Write-Host "安装时勾选 Add Python to PATH，然后重新运行本脚本。"
     exit 1
 }
@@ -144,12 +146,22 @@ if (-not $networkOk) {
     if ($continue -ne "y" -and $continue -ne "Y") { exit 1 }
 }
 
+$py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+if (Test-Path $py) {
+    $venvVer = & $py -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))" 2>$null
+    if ($venvVer -notmatch '^3\.(10|11|12)$') {
+        Write-Host "现有 .venv 是 Python $venvVer，版本不兼容（需要 3.10~3.12），删除重建 ..."
+        Remove-Item -Recurse -Force (Join-Path $PSScriptRoot ".venv")
+        if (Test-Path ".venv") {
+            Write-Host "无法删除旧 .venv（可能被占用），请关闭相关窗口/程序后重新运行。"
+            exit 1
+        }
+    }
+}
 if (-not (Test-Path ".venv")) {
     Write-Host "创建虚拟环境 .venv ..."
     & $python.Exe @($python.Prefix + @("-m", "venv", ".venv"))
 }
-
-$py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
     Write-Host "虚拟环境创建失败：$py 不存在"
     exit 1
