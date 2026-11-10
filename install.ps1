@@ -5,23 +5,42 @@ Set-Location $PSScriptRoot
 Write-Host "== 本地知识库助手 · 安装 =="
 Write-Host "目录：$PWD"
 
-$candidates = @("py -3.13", "py -3.12", "py -3.11", "py -3.10", "python")
-$python = $null
-foreach ($candidate in $candidates) {
-    $parts = $candidate.Split(" ")
-    $exe = $parts[0]
-    $args = @()
-    if ($parts.Length -gt 1) { $args = $parts[1..($parts.Length - 1)] }
-    if (Get-Command $exe -ErrorAction SilentlyContinue) {
-        $versionArgs = $args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")
-        & $exe @versionArgs 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $python = $candidate
-            break
+function Find-Python {
+    $candidates = @(
+        "py -3.13", "py -3.12", "py -3.11", "py -3.10", "python",
+        "C:\Windows\py.exe -3.12", "C:\Windows\py.exe"
+    )
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $found = $null
+    foreach ($candidate in $candidates) {
+        $parts = $candidate.Split(" ")
+        $exe = $parts[0]
+        $args = @()
+        if ($parts.Length -gt 1) { $args = $parts[1..($parts.Length - 1)] }
+        foreach ($cmd in (Get-Command $exe -All -ErrorAction SilentlyContinue)) {
+            # 跳过微软商店占位别名：WindowsApps 下的 python.exe 是假入口，一运行就弹商店
+            if ($cmd.Source -like "*\WindowsApps\*") { continue }
+            $versionArgs = $args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")
+            & $cmd.Source @versionArgs 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $found = $candidate; break }
         }
+        if ($found) { break }
     }
+    $ErrorActionPreference = $prevEAP
+    return $found
 }
 
+$python = Find-Python
+if (-not $python) {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "未检测到 Python 3.10+，尝试用 winget 自动安装 Python 3.12（约 1~2 分钟）..."
+        & winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+        # python.org 安装包会把 py 启动器装进 C:\Windows（已在 PATH 里，无需刷新）
+        $python = Find-Python
+    }
+}
 if (-not $python) {
     Write-Host "未找到 Python 3.10+。请安装 Python 3.12：https://www.python.org/downloads/"
     Write-Host "安装时勾选 Add Python to PATH，然后重新运行本脚本。"
@@ -52,31 +71,35 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "安装依赖 ..."
-& $py -m pip install --upgrade pip | Out-Null
+& $py -m pip install --upgrade pip 2>$null | Out-Null
 if ($env:KB_WITH_EMBED -ne "0") {
-    & $py -m pip install -e ".[embed]"
+    & $py -m pip install -e ".[embed]" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [警告] 语义检索依赖（fastembed）安装失败，退回基础安装（仅关键词搜索）。"
         Write-Host "  可稍后重试：$py -m pip install -e `".[embed]`""
-        & $py -m pip install -e .
+        & $py -m pip install -e . 2>$null
     }
 } else {
-    & $py -m pip install -e .
+    & $py -m pip install -e . 2>$null
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "依赖安装失败（pip 退出码 $LASTEXITCODE）。常见原因：网络不通 pypi.org，可配置镜像后重试。"
+    exit 1
 }
 
 if ($env:KB_WITH_DOCS -eq "1") {
     Write-Host "安装办公文档解析依赖 ..."
-    & $py -m pip install -e ".[docs]"
+    & $py -m pip install -e ".[docs]" 2>$null
 }
 
 if ($env:KB_WITH_VISION -eq "1") {
     Write-Host "安装图片整理依赖（OpenCV）..."
-    & $py -m pip install -e ".[vision]"
+    & $py -m pip install -e ".[vision]" 2>$null
 }
 
 if ($env:KB_WITH_FEISHU -eq "1") {
     Write-Host "安装飞书机器人依赖 ..."
-    & $py -m pip install -e ".[feishu]"
+    & $py -m pip install -e ".[feishu]" 2>$null
 }
 
 Write-Host ""
@@ -107,7 +130,7 @@ if ($ollamaChoice -eq "1") {
     $ollama = Get-Command ollama -ErrorAction SilentlyContinue
     if ($ollama) {
         Write-Host "下载模型 $modelName（首次会启动 Ollama，可能需要几分钟）..."
-        & $py -m kb model install --name $modelName
+        & $py -m kb model install --name $modelName 2>$null
     } else {
         Write-Host "  未检测到 Ollama。先安装：https://ollama.com/download"
         Write-Host "  安装后运行：kb model install --name $modelName"
@@ -119,7 +142,7 @@ if ($ollamaChoice -eq "1") {
 
 Write-Host ""
 Write-Host "运行环境自检 ..."
-& $py -m kb doctor
+& $py -m kb doctor 2>$null
 
 Write-Host ""
 Write-Host "完成。下一步："
