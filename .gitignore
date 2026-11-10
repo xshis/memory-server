@@ -17,6 +17,7 @@ config/*.bak-*
 dist/
 build/
 *.egg-info/
+wheels/
 
 # 系统垃圾
 .DS_Store

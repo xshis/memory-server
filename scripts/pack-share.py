@@ -32,7 +32,7 @@ ROOT_FILES = [
     "start.bat", "start.sh",
     "一键安装.bat", "一键安装.command", "一键启动.command", "一键关闭.command",
 ]
-ROOT_DIRS = ["config", "docs", "kb", "scripts", "tests"]
+ROOT_DIRS = ["config", "docs", "kb", "scripts", "tests", "wheels"]
 EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".log"}
 EXTRA_FILES = [LAN_SHARE / "安装说明.txt", LAN_SHARE / "安装演示.md"]

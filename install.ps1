@@ -162,24 +162,44 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot "logs") | Out-Null
+$useWheels = Test-Path (Join-Path $PSScriptRoot "wheels")
 Write-Host "安装基础依赖 ..."
 & $py -m pip install --upgrade pip
-& $py -m pip install -e .
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "基础依赖安装失败（pip 退出码 $LASTEXITCODE）。"
-    Write-Host "请检查网络（pypi.org）和 Python 版本。"
-    exit 1
+$baseOk = $false
+if ($useWheels) {
+    Write-Host "使用包内依赖包安装（离线）..."
+    & $py -m pip install --no-index --find-links wheels setuptools wheel
+    & $py -m pip install --no-index --find-links wheels --no-build-isolation -e .
+    if ($LASTEXITCODE -eq 0) { $baseOk = $true }
+    else { Write-Host "本地依赖包不完整，改用网络安装 ..." }
+}
+if (-not $baseOk) {
+    & $py -m pip install -e .
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "基础依赖安装失败（pip 退出码 $LASTEXITCODE）。"
+        Write-Host "请检查网络（pypi.org）和 Python 版本。"
+        exit 1
+    }
 }
 
 if ($env:KB_WITH_EMBED -ne "0") {
     Write-Host "安装语义检索依赖 fastembed ..."
     $embedLog = Join-Path $PSScriptRoot "logs\pip-embed.log"
-    & $py -m pip install "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog
-    if ($LASTEXITCODE -ne 0) {
+    $embedOk = $false
+    if ($useWheels) {
+        & $py -m pip install --no-index --find-links wheels "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog
+        if ($LASTEXITCODE -eq 0) { $embedOk = $true }
+    }
+    if (-not $embedOk) {
+        if ($useWheels) { Write-Host "本地依赖包不完整，改用网络安装 ..." }
+        & $py -m pip install "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog -Append
+        if ($LASTEXITCODE -eq 0) { $embedOk = $true }
+    }
+    if ($embedOk) {
+        Write-Host "  语义检索依赖安装完成。"
+    } else {
         Write-Host "  [警告] fastembed 安装失败，语义检索不可用（关键词搜索正常）。"
         Write-Host "  日志：logs\pip-embed.log；可重试：$py -m pip install fastembed"
-    } else {
-        Write-Host "  语义检索依赖安装完成。"
     }
 }
 
