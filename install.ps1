@@ -1,4 +1,4 @@
-# Portable installer for Windows.
+﻿# Portable installer for Windows.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
