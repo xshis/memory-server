@@ -554,6 +554,44 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 1 if findings else 0
 
 
+def cmd_scan_junk(args: argparse.Namespace) -> int:
+    from .junk_scan import scan_junk, trash_junk
+    roots = [Path(p).expanduser() for p in args.paths] or None
+    report = scan_junk(roots, max_files=args.max_files)
+    if args.trash:
+        if not args.yes:
+            print("移入废纸篓需要二次确认：请加上 --yes")
+            return 2
+        result = trash_junk(report, limit=args.limit)
+        if args.json:
+            _print_json(result)
+        else:
+            print(f"已移入废纸篓 {result['moved_count']} 项（可恢复），失败 {result['failed_count']} 项")
+            for item in result["failed"][:10]:
+                print(f"  失败：{item['path']}  {item['error']}")
+        return 0 if result["ok"] else 1
+    if args.json:
+        _print_json(report)
+        return 0
+    labels = {
+        "temp": "临时文件", "empty": "空文件", "old_log": "陈旧日志",
+        "duplicate": "重复文件", "stale_cache": "缓存目录大文件",
+    }
+    print(f"扫描根目录：{'、'.join(report['scanned_roots'])}")
+    print(f"共扫描 {report['scanned_files']} 个文件；可清理 {report['total']['count']} 项 / {report['total']['bytes_text']}"
+          + ("（达到扫描上限，已截断）" if report["truncated"] else ""))
+    for category, entry in report["categories"].items():
+        print(f"\n[{category}] {labels.get(category, category)}  {entry['count']} 项 / {entry['bytes_text']}"
+              + ("（只建议移出索引，不支持删除）" if category not in report["trashable_categories"] else ""))
+        for item in entry["items"][:10]:
+            print(f"  {item['size_text']:>10s}  {item['path']}  —— {item['reason']}")
+        if entry["count"] > 10:
+            print(f"  … 其余 {entry['count'] - 10} 项")
+    print(f"\n{report['note']}")
+    print("执行清理：kb scan-junk --trash --yes（只处理白名单类别，移入系统废纸篓可恢复）")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from .export import export_bundle
     result = export_bundle(args.output, mode=args.mode)
@@ -1005,6 +1043,15 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--path", default="")
     scan_parser.add_argument("--json", action="store_true")
     scan_parser.set_defaults(func=cmd_scan)
+
+    junk_parser = sub.add_parser("scan-junk", help="扫描电脑上的可清理文件（通用规则：临时/空/旧日志/重复/缓存）")
+    junk_parser.add_argument("paths", nargs="*", help="要扫描的目录；默认下载/临时/缓存目录")
+    junk_parser.add_argument("--json", action="store_true")
+    junk_parser.add_argument("--trash", action="store_true", help="把白名单类别移入系统废纸篓（可恢复）")
+    junk_parser.add_argument("--yes", action="store_true", help="配合 --trash 二次确认")
+    junk_parser.add_argument("--limit", type=int, default=200, help="--trash 最多处理多少项")
+    junk_parser.add_argument("--max-files", type=int, default=200000, help="最多扫描多少个文件")
+    junk_parser.set_defaults(func=cmd_scan_junk)
 
     export_parser = sub.add_parser("export", help="打包分享或迁移")
     export_parser.add_argument("--output", "-o", required=True)

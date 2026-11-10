@@ -1890,6 +1890,8 @@ function renderCleanWindow() {
     cleanBody.innerHTML += `<div class="clean-note" style="border:0;padding-top:0;margin-top:0">
       工具/缓存目录另占 ${escapeHtml(cacheRec.bytes_text || '')}，只建议移出索引或手动清理，不在这里删除。</div>`;
   }
+  cleanBody.innerHTML += `<div class="clean-note" style="border:0;padding-top:0;margin-top:0">
+    命令行跑 <b>kb scan-junk</b> 可深度扫描下载/临时/缓存目录（不限索引范围，通用规则，只报告不自动删）。</div>`;
   if (cleanBusy) {
     cleanBody.innerHTML += `<div class="clean-loading"><span class="spinner"></span>
       <span>正在移到废纸篓，请稍候…</span><div class="bar"><i></i></div></div>`;
