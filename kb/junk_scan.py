@@ -4,12 +4,16 @@
 - 跨平台通用：只按文件名/扩展名/年龄/内容哈希判断，与操作系统和索引库无关；
 - 保守：每个规则带"年龄"门槛，正在使用中的文件（近期有写入）一律跳过；
 - 只报告不自动删：只有显式调用 trash_junk 才会移入系统废纸篓（可恢复），
-  且缓存类条目永远不允许从这里删除——缓存只建议移出索引范围。
+  且缓存类条目永远不允许从这里删除——缓存只建议移出索引范围；
+- 常用软件（飞书/微信/谷歌浏览器/360 全家桶）**软件本身与用户数据绝不删除**：
+  只认领这些目录内部的缓存/临时子目录（Cache/Temp/logs/Crashpad/360Downloads 等），
+  聊天记录、书签密码等一律不动。
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -36,7 +40,22 @@ DEFAULT_MAX_FILES = 200_000               # 扫描文件数上限，超出截断
 ITEMS_PER_CATEGORY = 50                   # 每类最多展示多少条
 
 # 允许移入废纸篓的类别（白名单）；stale_cache 只建议移出索引，故意不在其中
-TRASHABLE = {"temp", "empty", "old_log", "duplicate", "backup"}
+TRASHABLE = {"temp", "empty", "old_log", "duplicate", "backup", "software"}
+
+# 常用软件的数据目录（只用于定位软件范围，**绝不整目录认领**）。
+# 进入这些目录后，只有命中 SOFTWARE_CACHE_PATTERN 的缓存/临时子目录才会被列为可清理项，
+# 聊天记录（WeChat Files\MsgAttach）、书签密码（Chrome\User Data\Bookmarks）等一律不动。
+SOFTWARE_DIR_RULES = [
+    ("360 全家桶", re.compile(r"^360", re.I)),                              # 360安全卫士/杀毒/浏览器/压缩/驱动/软件管家等
+    ("微信", re.compile(r"^(wechat files|wechat|weixin|xwechat_files|xwechat)$", re.I)),
+    ("飞书", re.compile(r"^(feishu|lark|larkshell|飞书)$", re.I)),
+    ("谷歌浏览器", re.compile(r"^(chrome|chromium|google chrome|googlechrome)$", re.I)),
+]
+# 软件目录内部"可清理"的子目录特征：缓存类（Cache/Code Cache/GPUCache/CacheStorage）+
+# 临时/日志/崩溃/隔离区 + 360 的下载与恢复缓存
+SOFTWARE_CACHE_PATTERN = re.compile(
+    r"(cache\w*|^temp$|^tmp$|^logs?$|crashpad|quarantine|360rec|360downloads)$", re.I
+)
 
 
 def default_roots() -> List[Path]:
@@ -117,8 +136,35 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _iter_files(roots: Iterable[Path], max_files: int) -> Tuple[List[Tuple[Path, os.stat_result]], bool]:
+def _software_label(parts: Tuple[str, ...]) -> str:
+    """路径中任一上级目录命中常用软件名单时返回软件名（用于限定可清理范围）。"""
+    for part in parts:
+        for label, pattern in SOFTWARE_DIR_RULES:
+            if pattern.search(part):
+                return label
+    return ""
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for current, _dirnames, filenames in os.walk(path, followlinks=False, onerror=lambda _e: None):
+        for filename in filenames:
+            try:
+                total += int((Path(current) / filename).stat().st_size)
+            except OSError:
+                continue
+    return total
+
+
+def _iter_files(
+    roots: Iterable[Path], max_files: int, now: float
+) -> Tuple[List[Tuple[Path, os.stat_result]], List[Dict[str, Any]], bool]:
+    """遍历扫描根：返回 (文件列表, 软件缓存目录条目, 是否截断)。
+
+    常用软件目录只进不删：进入后仅认领缓存/临时子目录为可清理项，
+    聊天记录、书签密码等数据目录保持透明走常规文件规则。"""
     files: List[Tuple[Path, os.stat_result]] = []
+    software_items: List[Dict[str, Any]] = []
     truncated = False
     for root in roots:
         for current, dirnames, filenames in os.walk(root, followlinks=False, onerror=lambda _e: None):
@@ -127,9 +173,28 @@ def _iter_files(roots: Iterable[Path], max_files: int) -> Tuple[List[Tuple[Path,
                 name for name in dirnames
                 if name.lower() not in NEVER_TOUCH_DIR_NAMES
             ]
+            context = _software_label(Path(current).parts)
+            kept: List[str] = []
+            for name in dirnames:
+                target = Path(current) / name
+                if context and SOFTWARE_CACHE_PATTERN.search(name):
+                    # 常用软件内的缓存/临时子目录：整目录认领（不含聊天/书签数据）
+                    size = _dir_size(target)
+                    software_items.append({
+                        "path": str(target),
+                        "name": name,
+                        "size": size,
+                        "size_text": human_size(size),
+                        "reason": f"{context}的缓存/临时数据（不含聊天记录与书签）",
+                        "age_days": None,
+                    })
+                    continue
+                kept.append(name)
+            dirnames[:] = kept
             for filename in filenames:
                 if len(files) >= max_files:
-                    return files, True
+                    truncated = True
+                    return files, software_items, truncated
                 if filename.lower() in NEVER_TOUCH_FILE_NAMES:
                     continue
                 candidate = Path(current) / filename
@@ -142,7 +207,7 @@ def _iter_files(roots: Iterable[Path], max_files: int) -> Tuple[List[Tuple[Path,
                 if not os.path.isfile(candidate):
                     continue
                 files.append((candidate, stat))
-    return files, truncated
+    return files, software_items, truncated
 
 
 def scan_junk(
@@ -153,7 +218,7 @@ def scan_junk(
     """扫描可清理文件，返回分组报告（只读，不改动任何文件）。"""
     roots = [Path(r).expanduser() for r in (roots or default_roots())]
     now = time.time()
-    files, truncated = _iter_files(roots, max_files)
+    files, software_items, truncated = _iter_files(roots, max_files, now)
 
     categories: Dict[str, Dict[str, Any]] = {}
     hash_groups: Dict[str, List[Tuple[Path, os.stat_result]]] = {}
@@ -162,6 +227,13 @@ def scan_junk(
         if category not in categories:
             categories[category] = {"count": 0, "bytes": 0, "items": []}
         return categories[category]
+
+    if software_items:
+        entry = bucket("software")
+        entry["count"] = len(software_items)
+        for item in software_items:
+            entry["bytes"] += int(item["size"])
+        entry["items"] = software_items
 
     for path, stat in files:
         classified = _classify(path, int(stat.st_size), float(stat.st_mtime), now)
@@ -226,7 +298,7 @@ def scan_junk(
         "categories": rendered,
         "total": {"count": total_count, "bytes": total_bytes, "bytes_text": human_size(total_bytes)},
         "trashable_categories": sorted(TRASHABLE),
-        "note": "stale_cache 只建议移出索引范围，不提供删除；--trash 只处理白名单类别，移入系统废纸篓可恢复。",
+        "note": "stale_cache 只建议移出索引范围，不提供删除；software 只含软件缓存/临时数据，软件本身与聊天记录、书签等用户数据不受影响；--trash 只处理白名单类别，移入系统废纸篓可恢复。",
     }
 
 
@@ -240,7 +312,7 @@ def trash_junk(report: Dict[str, Any], *, limit: int = 200) -> Dict[str, Any]:
             pending.append((Path(item["path"]), category))
     for path, category in pending[:limit]:
         try:
-            if not path.is_file():
+            if not path.exists():
                 raise FileNotFoundError("文件已不存在")
             destination = move_to_trash(path)
             moved.append({"path": str(path), "trash": destination, "category": category})

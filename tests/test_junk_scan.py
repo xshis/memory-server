@@ -36,6 +36,14 @@ class JunkScanTest(unittest.TestCase):
         touch("dup2/x.bin", content=b"hello-bytes", age_days=5)
         touch("node_modules/pkg/old.bin", size=60 * 1024 * 1024, age_days=40)
         touch("normal/报告.md", size=100)                        # 正常文件：不命中
+        # ---- 常用软件场景：只清缓存，不动软件本身和用户数据 ----
+        touch("WeChat Files/wxid_abc/MsgAttach/msg.db", content=b"chat-data")
+        touch("WeChat Files/wxid_abc/Cache/c1.bin", content=b"cache")
+        touch("Chrome/User Data/Default/Bookmarks", content=b"bookmarks")
+        touch("Chrome/User Data/Default/Cache/c2.bin", content=b"cache")
+        touch("Feishu/cache/f3.bin", content=b"cache")
+        touch("360Safe/360Downloads/setup.exe", content=b"installer")
+        touch("360Safe/report.dll", content=b"core")             # 360 非缓存文件：不动
         # ---- Windows 场景（有内容的文件都写不同内容，避免全零文件哈希撞车）----
         touch("win/Thumbs.db", content=b"thumbs")
         touch("win/photo.jpg", content=b"jpg-bytes")
@@ -106,6 +114,10 @@ class JunkScanTest(unittest.TestCase):
             def fake_move(path: Path) -> str:
                 calls.append(str(path))
                 destination = trash_dir / path.name
+                suffix = 1
+                while destination.exists():
+                    destination = trash_dir / f"{path.name}.{suffix}"
+                    suffix += 1
                 os.rename(path, destination)
                 return str(destination)
 
@@ -125,6 +137,51 @@ class JunkScanTest(unittest.TestCase):
             self.assertTrue((root / "normal/报告.md").exists())
             self.assertTrue((root / "sub/active.part").exists())
             self.assertEqual(len(calls), result["moved_count"])
+
+    def test_software_cache_only_never_user_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_tree(root)
+            report = scan_junk([root])
+            categories = report["categories"]
+            self.assertIn("software", report["trashable_categories"])
+            software = categories["software"]
+            sw_paths = {item["path"] for item in software["items"]}
+            # 只认领四家软件的缓存/临时目录
+            expected = {
+                root / "WeChat Files/wxid_abc/Cache",
+                root / "Chrome/User Data/Default/Cache",
+                root / "Feishu/cache",
+                root / "360Safe/360Downloads",
+            }
+            self.assertEqual(sw_paths, {str(p) for p in expected})
+            # 用户数据一律不出现
+            all_paths = " ".join(
+                item["path"] for entry in categories.values() for item in entry["items"]
+            )
+            self.assertNotIn("MsgAttach", all_paths)
+            self.assertNotIn("Bookmarks", all_paths)
+            self.assertNotIn("report.dll", all_paths)  # 360 的非缓存文件不动
+            # 整目录移废纸篓后：缓存没了，用户数据还在
+            trash_dir = root / "fake-trash2"
+            trash_dir.mkdir()
+
+            def fake_move(path: Path) -> str:
+                destination = trash_dir / path.name
+                suffix = 1
+                while destination.exists():
+                    destination = trash_dir / f"{path.name}.{suffix}"
+                    suffix += 1
+                os.rename(path, destination)
+                return str(destination)
+
+            with mock.patch("kb.junk_scan.move_to_trash", side_effect=fake_move):
+                result = trash_junk(report)
+            self.assertTrue(result["ok"])
+            self.assertFalse((root / "Chrome/User Data/Default/Cache").exists())
+            self.assertTrue((root / "Chrome/User Data/Default/Bookmarks").exists())
+            self.assertTrue((root / "WeChat Files/wxid_abc/MsgAttach/msg.db").exists())
+            self.assertTrue((root / "360Safe/report.dll").exists())
 
 
 if __name__ == "__main__":

@@ -649,11 +649,12 @@ def trash_root() -> Path:
 
 
 def move_to_trash(path: Path) -> str:
-    """把文件移到系统废纸篓，不直接删除。"""
+    """把文件或目录移到系统废纸篓，不直接删除。"""
     if os.name == "nt" and sys.platform != "darwin":
+        verb = "DeleteDirectory" if path.is_dir() else "DeleteFile"
         script = (
             "Add-Type -AssemblyName Microsoft.VisualBasic; "
-            f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{str(path)}',"
+            f"[Microsoft.VisualBasic.FileIO.FileSystem]::{verb}('{str(path)}',"
             "'OnlyErrorDialogs','SendToRecycleBin')"
         )
         subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True,
