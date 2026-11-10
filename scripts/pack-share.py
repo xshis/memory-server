@@ -29,7 +29,7 @@ FASTEMBED_SOURCE = Path.home() / ".cache" / "fastembed"
 
 ROOT_FILES = [
     ".gitignore", "README.md", "install.ps1", "install.sh", "pyproject.toml",
-    "start.bat", "start.sh",
+    "start.bat", "start.sh", "constraints-win312.txt",
     "一键安装.bat", "一键安装.command", "一键启动.command", "一键关闭.command",
 ]
 ROOT_DIRS = ["config", "docs", "kb", "scripts", "tests", "wheels"]

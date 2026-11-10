@@ -175,14 +175,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot "logs") | Out-Null
-$useWheels = Test-Path (Join-Path $PSScriptRoot "wheels")
+$useWheels = (Test-Path (Join-Path $PSScriptRoot "wheels")) -and (Test-Path (Join-Path $PSScriptRoot "constraints-win312.txt"))
+$offline = @()
+if ($useWheels) { $offline = @("--no-index", "--find-links", "wheels", "-c", "constraints-win312.txt") }
 Write-Host "安装基础依赖 ..."
 & $py -m pip install --upgrade pip
 $baseOk = $false
 if ($useWheels) {
-    Write-Host "使用包内依赖包安装（离线）..."
-    & $py -m pip install --no-index --find-links wheels setuptools wheel
-    & $py -m pip install --no-index --find-links wheels --no-build-isolation -e .
+    Write-Host "使用包内依赖包安装（离线，版本锁定）..."
+    & $py -m pip install @offline setuptools wheel
+    & $py -m pip install @offline --no-build-isolation -e .
     if ($LASTEXITCODE -eq 0) { $baseOk = $true }
     else { Write-Host "本地依赖包不完整，改用网络安装 ..." }
 }
@@ -203,7 +205,7 @@ if ($env:KB_WITH_EMBED -ne "0") {
     "=== installed (相关): $(& $py -m pip list 2>&1 | Select-String -Pattern 'numpy|onnx|pillow|token|httpx|protobuf|hugging|loguru|mmh3|tqdm|requests' | Out-String) ===" | Out-File -FilePath $embedLog -Encoding utf8 -Append
     $embedOk = $false
     if ($useWheels) {
-        & $py -m pip install --no-index --find-links wheels "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog -Append
+        & $py -m pip install @offline "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog -Append
         if ($LASTEXITCODE -eq 0) { $embedOk = $true }
     }
     if (-not $embedOk) {
@@ -221,20 +223,26 @@ if ($env:KB_WITH_EMBED -ne "0") {
 
 if ($env:KB_WITH_DOCS -eq "1") {
     Write-Host "安装办公文档解析依赖 ..."
-    & $py -m pip install -e ".[docs]"
-    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] 文档解析依赖安装失败，PDF/Office 解析不可用。" }
+    $ok = $false
+    if ($useWheels) { & $py -m pip install @offline -e ".[docs]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { & $py -m pip install -e ".[docs]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { Write-Host "  [警告] 文档解析依赖安装失败，PDF/Office 解析不可用。" }
 }
 
 if ($env:KB_WITH_VISION -eq "1") {
     Write-Host "安装图片整理依赖（OpenCV）..."
-    & $py -m pip install -e ".[vision]"
-    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] OpenCV 安装失败，图片归类不可用。" }
+    $ok = $false
+    if ($useWheels) { & $py -m pip install @offline -e ".[vision]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { & $py -m pip install -e ".[vision]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { Write-Host "  [警告] OpenCV 安装失败，图片归类不可用。" }
 }
 
 if ($env:KB_WITH_FEISHU -eq "1") {
     Write-Host "安装飞书机器人依赖 ..."
-    & $py -m pip install -e ".[feishu]"
-    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] 飞书依赖安装失败，机器人不可用。" }
+    $ok = $false
+    if ($useWheels) { & $py -m pip install @offline -e ".[feishu]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { & $py -m pip install -e ".[feishu]"; if ($LASTEXITCODE -eq 0) { $ok = $true } }
+    if (-not $ok) { Write-Host "  [警告] 飞书依赖安装失败，机器人不可用。" }
 }
 
 Write-Host ""
