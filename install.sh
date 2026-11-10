@@ -28,6 +28,30 @@ fi
 
 echo "Python：$($PYTHON_BIN --version 2>&1)"
 
+echo ""
+echo "第 0 步 · 环境预检（有问题会先提示，不动任何文件）"
+network_ok=1
+if command -v curl >/dev/null 2>&1; then
+  if ! curl -sS -m 6 -o /dev/null https://pypi.org/simple/ 2>/dev/null; then
+    network_ok=0
+  fi
+fi
+free_gb=$(df -g . | awk 'NR==2 {print $4}')
+if [ "$network_ok" = "1" ]; then
+  echo "  网络（pypi.org）：OK"
+else
+  echo "  [警告] 连不上 pypi.org——依赖安装会失败。请先解决网络/代理。"
+fi
+echo "  磁盘（剩余 ${free_gb}GB）"
+if [ "$network_ok" != "1" ]; then
+  printf "网络不通仍要继续吗？[y/N] "
+  read -r answer
+  case "$answer" in
+    y|Y) ;;
+    *) exit 1 ;;
+  esac
+fi
+
 if [ ! -d ".venv" ]; then
   echo "创建虚拟环境 .venv ..."
   "$PYTHON_BIN" -m venv .venv

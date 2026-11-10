@@ -49,6 +49,34 @@ if (-not $python) {
 
 Write-Host "Python：$python"
 
+Write-Host ""
+Write-Host "第 0 步 · 环境预检（有问题会先提示，不动任何文件）"
+# 网络：pypi.org 443 可达性（依赖安装的前提）
+$networkOk = $false
+try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $connect = $tcp.BeginConnect("pypi.org", 443, $null, $null)
+    $networkOk = $connect.AsyncWaitHandle.WaitOne(6000, $false) -and $tcp.Connected
+    $tcp.Close()
+} catch { }
+if ($networkOk) {
+    Write-Host "  网络（pypi.org:443）：OK"
+} else {
+    Write-Host "  [警告] 连不上 pypi.org——依赖安装会失败。请先解决网络/代理，再重新运行本脚本。"
+}
+# 磁盘：所在盘剩余空间 ≥ 5GB（依赖约 1GB + 本地模型约 2~5GB）
+$driveName = (Get-Item $PSScriptRoot).PSDrive.Name
+$freeGB = [math]::Round((Get-PSDrive $driveName).Free / 1GB, 1)
+if ($freeGB -ge 5) {
+    Write-Host "  磁盘（${driveName}: 剩 ${freeGB}GB）：OK"
+} else {
+    Write-Host "  [警告] ${driveName}: 盘只剩 ${freeGB}GB，建议至少 5GB 再装（可跳过本地模型）。"
+}
+if (-not $networkOk) {
+    $continue = Read-Host "网络不通仍要继续吗？[y/N]"
+    if ($continue -ne "y" -and $continue -ne "Y") { exit 1 }
+}
+
 if (-not (Test-Path ".venv")) {
     Write-Host "创建虚拟环境 .venv ..."
     $parts = $python.Split(" ")
