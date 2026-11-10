@@ -5,40 +5,101 @@ Set-Location $PSScriptRoot
 Write-Host "== 本地知识库助手 · 安装 =="
 Write-Host "目录：$PWD"
 
+function Test-PythonExe {
+    param([string]$Exe, [string[]]$PrefixArgs = @())
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $Exe @PrefixArgs -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prev
+    return $ok
+}
+
 function Find-Python {
-    $candidates = @(
-        "py -3.13", "py -3.12", "py -3.11", "py -3.10", "python",
-        "C:\Windows\py.exe -3.12", "C:\Windows\py.exe"
-    )
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $found = $null
-    foreach ($candidate in $candidates) {
+    # 1) PATH 里的 py 启动器 / python（跳过微软商店占位别名）
+    foreach ($candidate in @("py -3.13", "py -3.12", "py -3.11", "py -3.10", "python")) {
         $parts = $candidate.Split(" ")
         $exe = $parts[0]
-        $args = @()
-        if ($parts.Length -gt 1) { $args = $parts[1..($parts.Length - 1)] }
+        $prefix = @()
+        if ($parts.Length -gt 1) { $prefix = $parts[1..($parts.Length - 1)] }
         foreach ($cmd in (Get-Command $exe -All -ErrorAction SilentlyContinue)) {
-            # 跳过微软商店占位别名：WindowsApps 下的 python.exe 是假入口，一运行就弹商店
+            if (-not $cmd.Source) { continue }
             if ($cmd.Source -like "*\WindowsApps\*") { continue }
-            $versionArgs = $args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")
-            & $cmd.Source @versionArgs 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) { $found = $candidate; break }
+            if (Test-PythonExe -Exe $cmd.Source -PrefixArgs $prefix) {
+                $found = @{ Exe = $cmd.Source; Prefix = $prefix }
+                break
+            }
         }
         if ($found) { break }
     }
+    # 2) 直接扫常见安装目录：不依赖 PATH（winget 刚装完、当前窗口 PATH 没刷新也能找到）
+    if (-not $found) {
+        $dirs = @()
+        foreach ($base in @("$env:LOCALAPPDATA\Programs\Python", "C:\Program Files", "C:\")) {
+            if ($base -and (Test-Path $base)) {
+                $dirs += Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -like "Python3*" } |
+                    Sort-Object Name -Descending |
+                    ForEach-Object { $_.FullName }
+            }
+        }
+        if (Test-Path "C:\Windows\py.exe") { $dirs += "C:\Windows\py.exe" }
+        foreach ($dir in $dirs) {
+            $exe = if ($dir -like "*.exe") { $dir } else { Join-Path $dir "python.exe" }
+            if ((Test-Path $exe) -and (Test-PythonExe -Exe $exe)) {
+                $found = @{ Exe = $exe; Prefix = @() }
+                break
+            }
+        }
+    }
     $ErrorActionPreference = $prevEAP
     return $found
+}
+
+function Ensure-PythonOnPath {
+    param($Python)
+    $target = ""
+    if ($Python.Exe -like "*\python.exe") {
+        $target = Split-Path $Python.Exe -Parent
+    } else {
+        # py 启动器：问它真正的解释器路径，再把那个目录补进 PATH
+        try {
+            $real = (& $Python.Exe @($Python.Prefix) -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+            if ($real -and (Test-Path $real)) { $target = Split-Path $real -Parent }
+        } catch { }
+    }
+    if (-not $target) { return }
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not $userPath) { $userPath = "" }
+    if ($userPath -notlike "*$target*") {
+        [Environment]::SetEnvironmentVariable("Path", "$target;$userPath", "User")
+        Write-Host "  已把 $target 写入用户 PATH（新开的命令行窗口可直接用 python）"
+    }
+    if (-not (($env:Path -split ";") -contains $target)) {
+        $env:Path = "$target;$env:Path"
+        Write-Host "  当前窗口已生效：python 命令可直接使用"
+    }
 }
 
 $python = Find-Python
 if (-not $python) {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
-        Write-Host "未检测到 Python 3.10+，尝试用 winget 自动安装 Python 3.12（约 1~2 分钟）..."
-        & winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
-        # python.org 安装包会把 py 启动器装进 C:\Windows（已在 PATH 里，无需刷新）
+        Write-Host "未检测到 Python 3.10+，尝试用 winget 自动安装 Python 3.12（约 1~2 分钟，下面会显示安装进度）..."
+        & winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent 2>$null
+        Write-Host "winget 退出码：$LASTEXITCODE"
         $python = Find-Python
+        if ($python) {
+            Write-Host "检测到新安装的 Python：$($python.Exe)"
+        } else {
+            Write-Host "[警告] winget 执行完但没找到 Python：可能被系统策略拦截、需要管理员权限，或安装尚未完成。"
+            Write-Host "        可稍等 1 分钟重新运行本脚本；或手动安装：https://www.python.org/downloads/"
+        }
+    } else {
+        Write-Host "机器上没有 winget（老版本 Windows / 精简系统），无法自动安装。"
     }
 }
 if (-not $python) {
@@ -47,7 +108,8 @@ if (-not $python) {
     exit 1
 }
 
-Write-Host "Python：$python"
+Write-Host "Python：$($python.Exe) $($python.Prefix -join ' ')"
+Ensure-PythonOnPath -Python $python
 
 Write-Host ""
 Write-Host "第 0 步 · 环境预检（有问题会先提示，不动任何文件）"
@@ -79,11 +141,7 @@ if (-not $networkOk) {
 
 if (-not (Test-Path ".venv")) {
     Write-Host "创建虚拟环境 .venv ..."
-    $parts = $python.Split(" ")
-    $exe = $parts[0]
-    $args = @()
-    if ($parts.Length -gt 1) { $args = $parts[1..($parts.Length - 1)] }
-    & $exe @($args + @("-m", "venv", ".venv"))
+    & $python.Exe @($python.Prefix + @("-m", "venv", ".venv"))
 }
 
 $py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
