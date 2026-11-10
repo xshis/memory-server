@@ -29,7 +29,7 @@ fi
 echo "Python：$($PYTHON_BIN --version 2>&1)"
 
 echo ""
-echo "第 0 步 · 环境预检（有问题会先提示，不动任何文件）"
+echo "检查运行环境"
 network_ok=1
 if command -v curl >/dev/null 2>&1; then
   if ! curl -sS -m 6 -o /dev/null https://pypi.org/simple/ 2>/dev/null; then
@@ -44,7 +44,7 @@ else
 fi
 echo "  磁盘（剩余 ${free_gb}GB）"
 if [ "$network_ok" != "1" ]; then
-  printf "网络不通仍要继续吗？[y/N] "
+  printf "网络不通，是否继续？[y/N] "
   read -r answer
   case "$answer" in
     y|Y) ;;
@@ -76,8 +76,8 @@ echo "安装依赖 ..."
 "$PY" -m pip install --upgrade pip >/dev/null
 if [ "${KB_WITH_EMBED:-1}" = "1" ]; then
   if ! "$PY" -m pip install -e ".[embed]"; then
-    echo "  [警告] 语义检索依赖（fastembed）安装失败，退回基础安装（仅关键词搜索）。"
-    echo "  可稍后重试：$PY -m pip install -e '.[embed]'"
+    echo "  [警告] fastembed 安装失败，语义检索不可用（关键词搜索正常）。"
+    echo "  可重试：$PY -m pip install fastembed"
     "$PY" -m pip install -e .
   fi
 else
@@ -110,7 +110,7 @@ echo "  1) qwen2.5:3b   推荐，约 1.9GB，速度和质量平衡"
 echo "  2) qwen2.5:1.5b 更快，约 1GB，质量略低"
 echo "  3) qwen2.5:7b   更强，约 4.7GB，CPU 上明显更慢"
 echo "  4) 不安装"
-echo "  提示：100Mbps 下载约 3~6 分钟；慢网 10~30 分钟。资料不出本机。"
+echo "  下载参考：100Mbps 约 3~6 分钟"
 MODEL_NAME="${KB_OLLAMA_MODEL:-qwen2.5:3b}"
 OLLAMA_CHOICE="${KB_WITH_OLLAMA:-}"
 if [ -z "$OLLAMA_CHOICE" ] && [ -n "${KB_OLLAMA_MODEL:-}" ]; then OLLAMA_CHOICE=1; fi

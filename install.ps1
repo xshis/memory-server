@@ -93,15 +93,15 @@ $python = Find-Python
 if (-not $python) {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
-        Write-Host "未检测到 Python 3.10+，尝试用 winget 自动安装 Python 3.12（约 1~2 分钟，下面会显示安装进度）..."
+        Write-Host "未检测到 Python 3.10+，正在用 winget 安装 Python 3.12（约 1~2 分钟）..."
         & winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent 2>$null
         Write-Host "winget 退出码：$LASTEXITCODE"
         $python = Find-Python
         if ($python) {
             Write-Host "检测到新安装的 Python：$($python.Exe)"
         } else {
-            Write-Host "[警告] winget 执行完但没找到 Python：可能被系统策略拦截、需要管理员权限，或安装尚未完成。"
-            Write-Host "        可稍等 1 分钟重新运行本脚本；或手动安装：https://www.python.org/downloads/"
+            Write-Host "  [警告] winget 执行完成，但未找到 Python。"
+            Write-Host "        请稍后重新运行；或手动安装：https://www.python.org/downloads/"
         }
     } else {
         Write-Host "机器上没有 winget（老版本 Windows / 精简系统），无法自动安装。"
@@ -117,7 +117,7 @@ Write-Host "Python：$($python.Exe) $($python.Prefix -join ' ')"
 Ensure-PythonOnPath -Python $python
 
 Write-Host ""
-Write-Host "第 0 步 · 环境预检（有问题会先提示，不动任何文件）"
+Write-Host "检查运行环境"
 # 网络：pypi.org 443 可达性（依赖安装的前提）
 $networkOk = $false
 try {
@@ -140,7 +140,7 @@ if ($freeGB -ge 5) {
     Write-Host "  [警告] ${driveName}: 盘只剩 ${freeGB}GB，建议至少 5GB 再装（可跳过本地模型）。"
 }
 if (-not $networkOk) {
-    $continue = Read-Host "网络不通仍要继续吗？[y/N]"
+    $continue = Read-Host "网络不通，是否继续？[y/N]"
     if ($continue -ne "y" -and $continue -ne "Y") { exit 1 }
 }
 
@@ -167,17 +167,17 @@ Write-Host "安装基础依赖 ..."
 & $py -m pip install -e .
 if ($LASTEXITCODE -ne 0) {
     Write-Host "基础依赖安装失败（pip 退出码 $LASTEXITCODE）。"
-    Write-Host "上面 pip 输出的报错原文就是原因；常见：网络不通 pypi.org / Python 版本不兼容。"
+    Write-Host "请检查网络（pypi.org）和 Python 版本。"
     exit 1
 }
 
 if ($env:KB_WITH_EMBED -ne "0") {
-    Write-Host "安装语义检索依赖 fastembed（失败不影响主功能，自动退回关键词搜索）..."
+    Write-Host "安装语义检索依赖 fastembed ..."
     $embedLog = Join-Path $PSScriptRoot "logs\pip-embed.log"
     & $py -m pip install "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [警告] fastembed 装不上：语义检索暂不可用，文件搜索/问答仍正常。"
-        Write-Host "  详细原因已存 logs\pip-embed.log（可发我排查）；稍后可重试：$py -m pip install fastembed"
+        Write-Host "  [警告] fastembed 安装失败，语义检索不可用（关键词搜索正常）。"
+        Write-Host "  日志：logs\pip-embed.log；可重试：$py -m pip install fastembed"
     } else {
         Write-Host "  语义检索依赖安装完成。"
     }
@@ -207,7 +207,7 @@ Write-Host "  1) qwen2.5:3b   推荐，约 1.9GB，速度和质量平衡"
 Write-Host "  2) qwen2.5:1.5b 更快，约 1GB，质量略低"
 Write-Host "  3) qwen2.5:7b   更强，约 4.7GB，CPU 上明显更慢"
 Write-Host "  4) 不安装"
-Write-Host "  提示：100Mbps 下载约 3~6 分钟；慢网 10~30 分钟。资料不出本机。"
+Write-Host "  下载参考：100Mbps 约 3~6 分钟"
 $modelName = if ($env:KB_OLLAMA_MODEL) { $env:KB_OLLAMA_MODEL } else { "qwen2.5:3b" }
 $ollamaChoice = $env:KB_WITH_OLLAMA
 if (-not $ollamaChoice -and $env:KB_OLLAMA_MODEL) { $ollamaChoice = "1" }
