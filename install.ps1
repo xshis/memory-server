@@ -1,5 +1,7 @@
 ﻿# Portable installer for Windows.
-$ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 在 Stop 下会把原生程序的 stderr（pip 警告、ollama 进度）当致命错误，
+# 一条 pip 报错就能炸断整个安装；统一用 Continue，关键步骤显式检查 $LASTEXITCODE。
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 
 Write-Host "== 本地知识库助手 · 安装 =="
@@ -19,8 +21,8 @@ function Find-Python {
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     $found = $null
-    # 1) PATH 里的 py 启动器 / python（跳过微软商店占位别名）
-    foreach ($candidate in @("py -3.13", "py -3.12", "py -3.11", "py -3.10", "python")) {
+    # 1) PATH 里的 py 启动器 / python（跳过微软商店占位别名）；3.12 优先（fastembed 等二进制依赖对新版本支持稳）
+    foreach ($candidate in @("py -3.12", "py -3.11", "py -3.10", "py -3.13", "python")) {
         $parts = $candidate.Split(" ")
         $exe = $parts[0]
         $prefix = @()
@@ -42,10 +44,13 @@ function Find-Python {
             if ($base -and (Test-Path $base)) {
                 $dirs += Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -like "Python3*" } |
-                    Sort-Object Name -Descending |
                     ForEach-Object { $_.FullName }
             }
         }
+        # 3.10~3.12 优先，3.13+ 排后（二进制依赖兼容性更稳）
+        $preferred = @($dirs | Where-Object { $_ -match 'Python3(1[0-2])$' })
+        $others = @($dirs | Where-Object { $_ -notmatch 'Python3(1[0-2])$' } | Sort-Object -Descending)
+        $dirs = $preferred + $others
         if (Test-Path "C:\Windows\py.exe") { $dirs += "C:\Windows\py.exe" }
         foreach ($dir in $dirs) {
             $exe = if ($dir -like "*.exe") { $dir } else { Join-Path $dir "python.exe" }
@@ -156,36 +161,44 @@ if ($LASTEXITCODE -ne 0) {
     & $py -m ensurepip --upgrade 2>$null
 }
 
-Write-Host "安装依赖 ..."
-& $py -m pip install --upgrade pip 2>$null | Out-Null
-if ($env:KB_WITH_EMBED -ne "0") {
-    & $py -m pip install -e ".[embed]" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [警告] 语义检索依赖（fastembed）安装失败，退回基础安装（仅关键词搜索）。"
-        Write-Host "  可稍后重试：$py -m pip install -e `".[embed]`""
-        & $py -m pip install -e . 2>$null
-    }
-} else {
-    & $py -m pip install -e . 2>$null
-}
+New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot "logs") | Out-Null
+Write-Host "安装基础依赖 ..."
+& $py -m pip install --upgrade pip
+& $py -m pip install -e .
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "依赖安装失败（pip 退出码 $LASTEXITCODE）。常见原因：网络不通 pypi.org，可配置镜像后重试。"
+    Write-Host "基础依赖安装失败（pip 退出码 $LASTEXITCODE）。"
+    Write-Host "上面 pip 输出的报错原文就是原因；常见：网络不通 pypi.org / Python 版本不兼容。"
     exit 1
+}
+
+if ($env:KB_WITH_EMBED -ne "0") {
+    Write-Host "安装语义检索依赖 fastembed（失败不影响主功能，自动退回关键词搜索）..."
+    $embedLog = Join-Path $PSScriptRoot "logs\pip-embed.log"
+    & $py -m pip install "fastembed>=0.2.7" 2>&1 | Tee-Object -FilePath $embedLog
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [警告] fastembed 装不上：语义检索暂不可用，文件搜索/问答仍正常。"
+        Write-Host "  详细原因已存 logs\pip-embed.log（可发我排查）；稍后可重试：$py -m pip install fastembed"
+    } else {
+        Write-Host "  语义检索依赖安装完成。"
+    }
 }
 
 if ($env:KB_WITH_DOCS -eq "1") {
     Write-Host "安装办公文档解析依赖 ..."
-    & $py -m pip install -e ".[docs]" 2>$null
+    & $py -m pip install -e ".[docs]"
+    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] 文档解析依赖安装失败，PDF/Office 解析不可用。" }
 }
 
 if ($env:KB_WITH_VISION -eq "1") {
     Write-Host "安装图片整理依赖（OpenCV）..."
-    & $py -m pip install -e ".[vision]" 2>$null
+    & $py -m pip install -e ".[vision]"
+    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] OpenCV 安装失败，图片归类不可用。" }
 }
 
 if ($env:KB_WITH_FEISHU -eq "1") {
     Write-Host "安装飞书机器人依赖 ..."
-    & $py -m pip install -e ".[feishu]" 2>$null
+    & $py -m pip install -e ".[feishu]"
+    if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] 飞书依赖安装失败，机器人不可用。" }
 }
 
 Write-Host ""
@@ -216,7 +229,7 @@ if ($ollamaChoice -eq "1") {
     $ollama = Get-Command ollama -ErrorAction SilentlyContinue
     if ($ollama) {
         Write-Host "下载模型 $modelName（首次会启动 Ollama，可能需要几分钟）..."
-        & $py -m kb model install --name $modelName 2>$null
+        & $py -m kb model install --name $modelName
     } else {
         Write-Host "  未检测到 Ollama。先安装：https://ollama.com/download"
         Write-Host "  安装后运行：kb model install --name $modelName"
@@ -228,7 +241,7 @@ if ($ollamaChoice -eq "1") {
 
 Write-Host ""
 Write-Host "运行环境自检 ..."
-& $py -m kb doctor 2>$null
+& $py -m kb doctor
 
 Write-Host ""
 Write-Host "完成。下一步："
