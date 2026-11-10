@@ -18,6 +18,8 @@ dist/
 build/
 *.egg-info/
 wheels/
+wheels-win/
+wheels-mac/
 
 # 系统垃圾
 .DS_Store

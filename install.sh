@@ -74,34 +74,58 @@ fi
 
 echo "安装依赖 ..."
 "$PY" -m pip install --upgrade pip >/dev/null
+
+WHEELS_DIR="wheels"
+CONSTRAINTS="constraints-mac312.txt"
+OFFLINE=()
+if [ -d "$WHEELS_DIR" ] && [ -f "$CONSTRAINTS" ]; then
+  OFFLINE=(--no-index --find-links "$WHEELS_DIR" -c "$CONSTRAINTS")
+fi
+
+pip_install() {
+  # 优先用包内依赖（离线、版本锁定），失败自动回退网络
+  if [ ${#OFFLINE[@]} -gt 0 ]; then
+    if "$PY" -m pip install "${OFFLINE[@]}" --no-build-isolation "$@"; then
+      return 0
+    fi
+    echo "  本地依赖包不完整，改用网络安装 ..."
+  fi
+  "$PY" -m pip install "$@"
+}
+
+if [ ${#OFFLINE[@]} -gt 0 ]; then
+  echo "使用包内依赖包安装 ..."
+  "$PY" -m pip install "${OFFLINE[@]}" --no-build-isolation setuptools wheel >/dev/null || true
+fi
+
 if [ "${KB_WITH_EMBED:-1}" = "1" ]; then
-  if ! "$PY" -m pip install -e ".[embed]"; then
+  if ! pip_install -e ".[embed]"; then
     echo "  [警告] fastembed 安装失败，语义检索不可用（关键词搜索正常）。"
     echo "  可重试：$PY -m pip install fastembed"
-    "$PY" -m pip install -e .
+    pip_install -e . || true
   fi
 else
-  "$PY" -m pip install -e .
+  pip_install -e .
 fi
 
 if [ "${KB_WITH_DOCS:-0}" = "1" ]; then
   echo "安装办公文档解析依赖 ..."
-  "$PY" -m pip install -e ".[docs]"
+  pip_install -e ".[docs]" || echo "  [警告] 文档解析依赖安装失败，PDF/Office 解析不可用。"
 fi
 
 if [ "${KB_WITH_VISION:-0}" = "1" ]; then
   echo "安装图片整理依赖（OpenCV）..."
-  "$PY" -m pip install -e ".[vision]"
+  pip_install -e ".[vision]" || echo "  [警告] OpenCV 安装失败，图片归类不可用。"
 fi
 
 if [ "${KB_WITH_FEISHU:-0}" = "1" ]; then
   echo "安装飞书机器人依赖 ..."
-  "$PY" -m pip install -e ".[feishu]"
+  pip_install -e ".[feishu]" || echo "  [警告] 飞书依赖安装失败，机器人不可用。"
 fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
   echo "安装 macOS 菜单栏依赖 ..."
-  "$PY" -m pip install -e ".[tray]" || echo "  菜单栏依赖安装失败，可稍后手动运行：pip install -e '.[tray]'"
+  pip_install -e ".[tray]" || echo "  菜单栏依赖安装失败，可稍后手动运行：pip install -e '.[tray]'"
 fi
 
 echo
