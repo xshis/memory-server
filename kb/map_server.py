@@ -53,6 +53,49 @@ CACHE_DIRS = {
     "mysql-data", ".trae", ".codex", ".codex-deepseek", ".kimi_openclaw", ".lark-cli",
     ".V2rayU", ".openjfx", ".ServiceHub", ".subversion", ".sheetagent", ".workbuddy",
 }
+
+# 计算式补充：换一台电脑，写死的名单覆盖不到（360、微信、QQ、各包管理器缓存等），
+# 按目录名特征识别。只影响"推荐/标记"，永远不会据此自动删除，误标代价低。
+CACHE_DIR_PATTERNS = [
+    re.compile(r"^360", re.I),                 # 360safe/360极速浏览器/360压缩等
+    re.compile(r"node_modules$", re.I),
+    re.compile(r"^\.git$", re.I),
+    re.compile(r"venv$", re.I),                # venv/.venv/myenv
+    re.compile(r"__pycache__$"),
+    re.compile(r"^(wechat files|wxwork|wework)", re.I),
+    re.compile(r"^(qq|tim|nt_qq)", re.I),
+    re.compile(r"^(feishu|lark|dingtalk|alipay|baidunetdisk|wps)[-_ ]?cache", re.I),
+    re.compile(r"cache[s]?$", re.I),
+    re.compile(r"^(tmp|temp|logs?)$", re.I),
+]
+
+# 正在写入的临时文件（如下载中的 .part/.crdownload）不推荐、也不允许删除
+TEMP_RECENT_SECONDS = 600
+
+
+def is_cache_dir(name: str) -> bool:
+    if not name or name == "(根目录)":
+        return False
+    if name in CACHE_DIRS:
+        return True
+    return any(pattern.search(name) for pattern in CACHE_DIR_PATTERNS)
+
+
+def _is_temp_name(name: str) -> bool:
+    name = (name or "").lower()
+    return (
+        name in {".ds_store", "thumbs.db", "desktop.ini"}
+        or name.startswith("~$")
+        or name.endswith((".tmp", ".temp", ".part", ".crdownload", ".download"))
+    )
+
+
+def _is_recent(mtime: Any) -> bool:
+    try:
+        stamp = float(mtime or 0)
+    except (TypeError, ValueError):
+        return False
+    return stamp > 0 and (time.time() - stamp) < TEMP_RECENT_SECONDS
 PROJECT_PATTERNS = [
     ("personal-kb", re.compile(r"personal-kb", re.I)),
     ("xxd-orders", re.compile(r"xxd-orders", re.I)),
@@ -211,12 +254,8 @@ def build_graph(db_path: Path, *, max_files: int = 500,
                 break
         row["is_empty"] = int(row["size"] or 0) == 0
         name_lower = str(row["name"] or "").lower()
-        row["is_temp"] = (
-            name_lower in {".ds_store", "thumbs.db", "desktop.ini"}
-            or name_lower.startswith("~$")
-            or name_lower.endswith((".tmp", ".temp", ".part", ".crdownload", ".download"))
-        )
-        row["is_cache"] = row["top_dir"] in CACHE_DIRS
+        row["is_temp"] = _is_temp_name(name_lower) and not _is_recent(row["mtime"])
+        row["is_cache"] = is_cache_dir(row["top_dir"])
 
     duplicate_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -316,7 +355,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
 
     emit(48, "统计推荐与目录")
     top_exts = [ext for ext, _ in ext_counts.most_common(12) if ext]
-    user_dirs = [name for name, _ in dir_counts.most_common(40) if name not in CACHE_DIRS and name != "(根目录)"][:10]
+    user_dirs = [name for name, _ in dir_counts.most_common(40) if not is_cache_dir(name) and name != "(根目录)"][:10]
     top_projects = [name for name, _ in project_counts.most_common(6)]
 
     dir_images = Counter(row["top_dir"] for row in rows if row["category"] == "图片")
@@ -324,7 +363,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
     organize_suggestions: List[Dict[str, Any]] = []
     candidates = [
         name for name, count in dir_counts.items()
-        if name not in ("(根目录)",) and name not in CACHE_DIRS
+        if name != "(根目录)" and not is_cache_dir(name)
         and not name.startswith(".")
         and (dir_images.get(name, 0) >= 3 or count >= 20)
     ]
@@ -363,7 +402,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
         tags.append(add_tag(f"ext:{ext}", ext, "ext", ext_counts[ext], "#22d3ee"))
     for name in user_dirs:
         tags.append(add_tag(f"dir:{name}", name, "dir", dir_counts[name], "#fbbf24"))
-    cache_count = sum(count for name, count in dir_counts.items() if name in CACHE_DIRS)
+    cache_count = sum(count for name, count in dir_counts.items() if is_cache_dir(name))
     if cache_count:
         tags.append(add_tag("dir:工具缓存", "工具/缓存", "dir", cache_count, "#64748b"))
     for tag_id, label in (
@@ -393,7 +432,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
         result = [f"cat:{row['category']}"]
         if row["top_dir"] in user_dir_set:
             result.append(f"dir:{row['top_dir']}")
-        elif row["top_dir"] in CACHE_DIRS:
+        elif is_cache_dir(row["top_dir"]):
             result.append("dir:工具缓存")
         if row["project"]:
             result.append(f"proj:{row['project']}")
@@ -414,7 +453,7 @@ def build_graph(db_path: Path, *, max_files: int = 500,
     def score(row: Dict[str, Any]) -> Tuple[int, int, float, float]:
         return (
             1 if row["content_status"] == "indexed" else 0,
-            0 if row["top_dir"] in CACHE_DIRS else 1,
+            0 if is_cache_dir(row["top_dir"]) else 1,
             float(row["mtime"] or 0),
             math.log1p(max(0, int(row["size"] or 0))),
         )
@@ -1197,9 +1236,7 @@ class GraphState:
         name = str(row.get("name") or "").lower()
         if int(row.get("size") or 0) == 0:
             return "空文件"
-        if (name in {".ds_store", "thumbs.db", "desktop.ini"}
-                or name.startswith("~$")
-                or name.endswith((".tmp", ".temp", ".part", ".crdownload", ".download"))):
+        if _is_temp_name(name) and not _is_recent(row.get("mtime")):
             return "临时文件"
         digest = str(row.get("sha256") or "")
         if digest and duplicates.get(digest, 0) > 1:
@@ -1230,11 +1267,7 @@ class GraphState:
                     if not target.is_file():
                         raise FileNotFoundError("文件已不存在")
                     name = str(row.get("name") or "").lower()
-                    if int(row.get("size") or 0) == 0 or (
-                        name in {".ds_store", "thumbs.db", "desktop.ini"}
-                        or name.startswith("~$")
-                        or name.endswith((".tmp", ".temp", ".part", ".crdownload", ".download"))
-                    ):
+                    if int(row.get("size") or 0) == 0 or _is_temp_name(name):
                         reason = self._trash_reason(row, Counter())
                     else:
                         if duplicates is None:
